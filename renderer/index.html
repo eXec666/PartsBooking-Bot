@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>G&G БОТ</title>
+  <!-- External styles (to be created next) -->
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <!-- App Header -->
+  <header class="app-header">
+    <div class="app-brand">
+      <img src="gng_logo.png" alt="G&G" class="app-logo" />
+      <span class="app-title">G&amp;G БОТ</span>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Tabs -->
+    <nav id="topTabs" class="tabs" role="tablist" aria-label="Основные разделы">
+      <button data-tab="main" id="tab-main" class="active" role="tab" aria-selected="true" aria-controls="main">
+        Главное меню
+      </button>
+      <button data-tab="db" id="tab-db" role="tab" aria-selected="false" aria-controls="db">
+        База данных
+      </button>
+      <button data-tab="logs" id="tab-logs" role="tab" aria-selected="false" aria-controls="logs">
+        Логи
+      </button>
+    </nav>
+
+    <!-- Главное меню -->
+    <section id="main" class="tab-content active" role="tabpanel" aria-labelledby="tab-main">
+      <h2>Главное меню</h2>
+
+      <div class="card">
+        <div class="input-group">
+          <label for="partNumberInput" class="sr-only">Артикул</label>
+          <input type="text" id="partNumberInput" placeholder="Введите артикул" />
+          <button id="queryPartBtn" class="btn btn--primary" type="button">Проверить</button>
+        </div>
+
+        <div class="btn-group">
+          <button id="selectFileBtn" class="btn" type="button">Выбрать Excel файл</button>
+          <button id="startTechniqueBtn" class="btn btn--primary" type="button" disabled>Запустить технику</button>
+          <button id="startNodesBtn" class="btn btn--secondary" type="button">Запустить узлы</button>
+        </div>
+
+        <div id="filePathDisplay" class="muted">Файл не выбран</div>
+
+        <!-- Keep original structure for renderer compatibility -->
+        <div id="progressBar" class="progress">
+          <div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- База данных -->
+    <section id="db" class="tab-content" role="tabpanel" aria-labelledby="tab-db">
+      <h2>База данных</h2>
+
+      <div class="card">
+        <div class="btn-group db-controls">
+          <button id="wipeDbBtn" class="btn btn--danger" type="button">Сбросить БД</button>
+          <button id="openDbBtn" class="btn" type="button">Открыть БД</button>
+          <button id="downloadCsvBtn" class="btn" type="button">CSV</button>
+        </div>
+
+        <div id="dbViewer" class="db-viewer"></div>
+
+        <section id="db-dump-section" class="db-dump">
+          <h3>Импорт из Excel</h3>
+
+          <!-- Keep original IDs; CSS will style these -->
+          <div id="db-progress-track" class="progress">
+            <div id="db-progress-bar"></div>
+          </div>
+
+          <div class="progress-meta">
+            <span id="db-progress-label">0%</span>
+            <small id="db-progress-meta">0 / 0 rows</small>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <!-- Логи -->
+    <section id="logs" class="tab-content" role="tabpanel" aria-labelledby="tab-logs">
+      <h2>Логи</h2>
+
+      <div class="card">
+        <div id="logsWindow" class="logs-window" role="log" aria-live="polite"></div>
+
+        <div class="btn-row">
+          <button id="scrollDownBtn" class="btn" type="button">Вниз</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Your existing scripts -->
+  <script src="dbViewerRenderer.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

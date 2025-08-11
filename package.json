@@ -1,0 +1,16 @@
+{
+  "name": "partsbooking",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {
+    "electron": "^30.0.0",
+    "better-sqlite3": "^9.0.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.1",
+    "exceljs": "^4.4.0",
+    "uuid": "^9.0.0"
+  }
+}
