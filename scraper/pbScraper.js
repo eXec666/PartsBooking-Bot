@@ -15,7 +15,7 @@ puppeteer.use(StealthPlugin());
 
 const CONFIG = {
   inputFile: path.join(process.resourcesPath || __dirname, 'prices_input.xlsx'),
-  ourSiteCode: 1269, // kept as-is for rankPrice signature compatibility
+  ourSiteCode: 1269,
   maxPartsToProcess: 0,
   maxConcurrentInstances: Math.max(1, Math.min(2, os.cpus().length)),
   requestThrottle: 1200,
@@ -97,16 +97,11 @@ class ParallelScraper {
 
       let priceItems = null;
 
-      // Set up listener to catch the API payload
       this.page.on('response', async (response) => {
         const url = response.url();
         if (url.includes('/price_search/search')) {
           try {
             const json = await response.json();
-
-            // DEBUG: Log full JSON payload
-            console.log(`[worker ${this.instanceId}] Full payload for ${partNumber}:`, JSON.stringify(json, null, 2));
-
             if (json && json.price_items) {
               priceItems = json.price_items;
               console.log(`[worker ${this.instanceId}] Captured ${priceItems.length} price items for ${partNumber}`);
@@ -118,8 +113,6 @@ class ParallelScraper {
       });
 
       await this.page.goto(productUrl, CONFIG.navigation);
-
-      // Give some time for the API to fire
       await sleep(2500);
 
       if (!priceItems) {
@@ -127,7 +120,25 @@ class ParallelScraper {
         return { ok: false, error: 'No price_items', partNumber };
       }
 
-      // Transform into [price_id, cost]
+      const leaderPhraseOriginal = 'Лидер по позиции';
+      const leaderPhraseEnglish = 'Leader in position';
+      const isLeader = Array.isArray(priceItems) && priceItems.some(x => {
+        const s = x?.sys_info?.search_comment || x?.search_comment || '';
+        return typeof s === 'string' && s.includes(leaderPhraseOriginal);
+      });
+
+      if (isLeader) {
+        priceItems = priceItems.map(x => {
+          if (typeof x?.sys_info?.search_comment === 'string' && x.sys_info.search_comment.includes(leaderPhraseOriginal)) {
+            x.sys_info.search_comment = leaderPhraseEnglish;
+          }
+          if (typeof x?.search_comment === 'string' && x.search_comment.includes(leaderPhraseOriginal)) {
+            x.search_comment = leaderPhraseEnglish;
+          }
+          return x;
+        });
+      }
+
       const slag = priceItems
         .map(x => {
           const pid = x?.price_id ?? x?.id ?? null;
@@ -142,6 +153,11 @@ class ParallelScraper {
       console.log(`[worker ${this.instanceId}] Total picked for ${partNumber}: ${slag.length}`);
 
       const ranked = rankPrice(slag, CONFIG.ourSiteCode, partNumber, brandName);
+
+      if (isLeader && ranked && Object.prototype.hasOwnProperty.call(ranked, 'overPrice')) {
+        ranked.overPrice = null;
+        console.log(`[worker ${this.instanceId}] Leader detected ("${leaderPhraseEnglish}") → forcing ranked.overPrice = null`);
+      }
 
       this.results.push(ranked);
       this.buffer.push(ranked);
