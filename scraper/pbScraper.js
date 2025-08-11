@@ -1,150 +1,181 @@
-// scrapers/prices_scraper.js
+// scraper/pbScraper.js
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const { v4: uuidv4 } = require('uuid');
 const ExcelJS = require('exceljs');
 const { app } = require('electron');
 
 const initDb = require('../db/init_db');
+const dbManager = require('../db/db_Manager');
+const { rankPrice } = dbManager;
 
 puppeteer.use(StealthPlugin());
 
-// --- Configuration ---
 const CONFIG = {
   inputFile: path.join(process.resourcesPath || __dirname, 'prices_input.xlsx'),
-  siteBase: 'https://partsbooking.ru',
-  baseUrl: 'https://partsbooking.ru/products',
-  apiBase: 'https://partsbooking.ru/backend/v3/www/3.0.1/price_search/search',
-  regionId: 28,
-  maxPartsToProcess: 0, // 0 = all
-  maxConcurrentInstances: Math.max(1, Math.floor(os.cpus().length * 0.75)),
+  ourSiteCode: 1269,
+  maxPartsToProcess: 0,
+  maxConcurrentInstances: Math.max(1, Math.min(2, os.cpus().length)),
   requestThrottle: 1200,
-  navigation: {
-    timeout: 45000,
-    waitUntil: 'networkidle2'
-  },
-  browser: {
-    headless: true,
-    executablePath: null,
-    userDataDir: path.join(app ? app.getPath('userData') : os.tmpdir(), 'puppeteer_prices'),
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote'
-    ],
-    instances: Array.from(
-      { length: Math.max(1, Math.floor(os.cpus().length * 0.75)) },
-      (_, i) => ({
-        x: (i % 2) * 1280,
-        y: Math.floor(i / 2) * 800,
-        width: 1280,
-        height: 800
-      })
-    )
-  },
-  debug: {
-    saveScreenshots: false,
-    screenshotPath: path.join(os.homedir(), 'prices-scraper-debug')
-  }
+  navigation: { timeout: 45000, waitUntil: 'networkidle2' }
 };
 
 const sleep = ms => new Promise(res => setTimeout(res, ms));
+
 let sharedTaskQueue = [];
 function getNextTask() { return sharedTaskQueue.shift() || null; }
 
-// --- Parallel Scraper ---
 class ParallelScraper {
-  constructor(config, instanceId) {
-    this.config = config;
+  constructor(instanceId) {
     this.instanceId = instanceId;
     this.results = [];
+    this.buffer = [];
+    this.browser = null;
+    this.page = null;
   }
 
   async initialize() {
-    if (!CONFIG.browser.executablePath) {
-      const chromeLauncher = await import('chrome-launcher');
-      CONFIG.browser.executablePath = chromeLauncher.Launcher.getInstallations()[0];
-    }
+    try {
+      let execPath = puppeteer.executablePath?.();
+      if (execPath && execPath.includes('app.asar')) {
+        execPath = execPath.replace('app.asar', 'app.asar.unpacked');
+      }
+      if (!execPath || !fs.existsSync(execPath)) {
+        throw new Error(`Chromium not found at "${execPath}". Install puppeteer and unpack .local-chromium.`);
+      }
 
-    this.browser = await puppeteer.launch({
-      executablePath: CONFIG.browser.executablePath,
-      headless: CONFIG.browser.headless,
-      args: CONFIG.browser.args,
-      ignoreHTTPSErrors: true,
-      userDataDir: CONFIG.browser.userDataDir
-    });
+      console.log(`[pbScraper][worker ${this.instanceId}] Using Chromium at: ${execPath}`);
 
-    this.page = await this.browser.newPage();
-    await this.page.setViewport({ width: 1280, height: 800 });
-    await this.page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36'
-    );
-    await this.page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8' });
+      const launchArgs = [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--disable-gpu',
+        '--no-first-run',
+        '--no-zygote',
+        '--single-process',
+        '--disable-extensions'
+      ];
 
-    // Preload the site once to establish cookies/session.
-    await this.page.goto(CONFIG.baseUrl, {
-      waitUntil: CONFIG.navigation.waitUntil,
-      timeout: CONFIG.navigation.timeout
-    }).catch(() => {});
-  }
+      const workerDataDir = path.join(app.getPath('userData'), `puppeteer_worker_${this.instanceId}`);
 
-  // Encode space as + for make_name
-  encodeForQuery(v) { return encodeURIComponent(v).replace(/%20/g, '+'); }
-
-  buildSearchUrl(brandName, partNumber) {
-    const make_name = this.encodeForQuery(String(brandName).trim());
-    const oem = encodeURIComponent(String(partNumber).trim());
-    // Optional query members left empty intentionally to mirror found request
-    const q = [
-      `make_name=${make_name}`,
-      `oem=${oem}`,
-      // detail_name optional; omit to avoid over-encoding issues
-      'customer_id',
-      'app_token',
-      `region_id=${CONFIG.regionId}`,
-      `customer_guid=${uuidv4()}`,
-      `_=${Date.now()}`
-    ].join('&');
-    return `${CONFIG.apiBase}?${q}`;
-  }
-
-  async fetchPriceItems(brandName, partNumber) {
-    const url = this.buildSearchUrl(brandName, partNumber);
-    // Use page context fetch to bypass CORS and share cookies.
-    return await this.page.evaluate(async (requestUrl) => {
-      const res = await fetch(requestUrl, {
-        method: 'GET',
-        credentials: 'include',
-        headers: {
-          'Accept': 'application/json, text/plain, */*',
-        }
+      this.browser = await puppeteer.launch({
+        headless: true,
+        executablePath: execPath,
+        args: launchArgs,
+        ignoreHTTPSErrors: true,
+        userDataDir: workerDataDir
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
-    }, url);
+
+      this.page = await this.browser.newPage();
+      await this.page.setViewport({ width: 1280, height: 800 });
+      await this.page.setUserAgent(
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36'
+      );
+      await this.page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8' });
+
+    } catch (e) {
+      console.error(`[worker ${this.instanceId}] puppeteer launch failed: ${e.message}`);
+      throw e;
+    }
+  }
+
+  buildProductUrl(brandName, partNumber) {
+    const brand = encodeURIComponent(String(brandName).trim());
+    const part = encodeURIComponent(String(partNumber).trim());
+    return `https://partsbooking.ru/products/${brand}/${part}.html`;
   }
 
   async processTask(task) {
     const { brandName, partNumber } = task;
     try {
-      const json = await this.fetchPriceItems(brandName, partNumber);
+      const productUrl = this.buildProductUrl(brandName, partNumber);
+      console.log(`[worker ${this.instanceId}] Navigating to: ${productUrl}`);
 
-      const items = Array.isArray(json?.price_items) ? json.price_items : [];
-      const compact = items.map(x => ({
-        price_id: x?.price_id ?? null,
-        cost: x?.cost ?? null
-      }));
+      let priceItems = null;
 
-      this.results.push(...compact);
-      return { ok: true, count: compact.length, partNumber };
+      this.page.on('response', async (response) => {
+        const url = response.url();
+        if (url.includes('/price_search/search')) {
+          try {
+            const json = await response.json();
+            if (json && json.price_items) {
+              priceItems = json.price_items;
+              console.log(`[worker ${this.instanceId}] Captured ${priceItems.length} price items for ${partNumber}`);
+            }
+          } catch (err) {
+            console.error(`[worker ${this.instanceId}] Failed to parse price_search JSON: ${err.message}`);
+          }
+        }
+      });
+
+      await this.page.goto(productUrl, CONFIG.navigation);
+      await sleep(2500);
+
+      if (!priceItems) {
+        console.warn(`[worker ${this.instanceId}] No price_items found for ${partNumber}`);
+        return { ok: false, error: 'No price_items', partNumber };
+      }
+
+      const leaderPhraseOriginal = 'Лидер по позиции';
+      const leaderPhraseEnglish = 'Leader in position';
+      const isLeader = Array.isArray(priceItems) && priceItems.some(x => {
+        const s = x?.sys_info?.search_comment || x?.search_comment || '';
+        return typeof s === 'string' && s.includes(leaderPhraseOriginal);
+      });
+
+      if (isLeader) {
+        priceItems = priceItems.map(x => {
+          if (typeof x?.sys_info?.search_comment === 'string' && x.sys_info.search_comment.includes(leaderPhraseOriginal)) {
+            x.sys_info.search_comment = leaderPhraseEnglish;
+          }
+          if (typeof x?.search_comment === 'string' && x.search_comment.includes(leaderPhraseOriginal)) {
+            x.search_comment = leaderPhraseEnglish;
+          }
+          return x;
+        });
+      }
+
+      const slag = priceItems
+        .map(x => {
+          const pid = x?.price_id ?? x?.id ?? null;
+          const c = x?.cost ?? x?.price ?? null;
+          if (pid != null && c != null) {
+            console.log(`[worker ${this.instanceId}] Picked fields for ${partNumber}: price_id=${pid}, cost=${c}`);
+          }
+          return [pid, c];
+        })
+        .filter(p => p[0] != null && p[1] != null);
+
+      console.log(`[worker ${this.instanceId}] Total picked for ${partNumber}: ${slag.length}`);
+
+      const ranked = rankPrice(slag, CONFIG.ourSiteCode, partNumber, brandName);
+
+      if (isLeader && ranked && Object.prototype.hasOwnProperty.call(ranked, 'overPrice')) {
+        ranked.overPrice = null;
+        console.log(`[worker ${this.instanceId}] Leader detected ("${leaderPhraseEnglish}") → forcing ranked.overPrice = null`);
+      }
+
+      this.results.push(ranked);
+      this.buffer.push(ranked);
+
+      if (this.buffer.length >= 100) {
+        try {
+          dbManager.dumpToDb('prices', this.buffer);
+        } finally {
+          this.buffer = [];
+        }
+      }
+
+      return { ok: true, count: slag.length, partNumber };
     } catch (err) {
+      console.error(`[worker ${this.instanceId}] task ${partNumber} failed: ${err.message}`);
       return { ok: false, error: err.message, partNumber };
+    } finally {
+      this.page.removeAllListeners('response');
     }
   }
 
@@ -152,28 +183,22 @@ class ParallelScraper {
     while (true) {
       const task = getNextTask();
       if (!task) break;
-
       await this.processTask(task);
       progressCallback();
-
       await sleep(CONFIG.requestThrottle + Math.random() * 400);
     }
   }
 
   async close() {
-    if (this.browser) await this.browser.close().catch(() => {});
+    try { if (this.page && !this.page.isClosed()) await this.page.close(); } catch {}
+    try { if (this.browser) await this.browser.close(); } catch {}
   }
 }
 
-// Global scrape lock
 let isScraping = false;
 
 module.exports = {
-  runWithProgress: async function (
-    progressCallback = () => {},
-    onForceRefresh = () => {},
-    inputFilePath = null
-  ) {
+  runWithProgress: async function (progressCallback = () => {}, onForceRefresh = () => {}, inputFilePath = null) {
     if (isScraping) return { message: 'Scraping is already in progress.' };
     isScraping = true;
 
@@ -181,18 +206,17 @@ module.exports = {
     const tick = () => progressCallback(null, `Processed ${++tickCount}`);
 
     try {
-      await initDb(); // keep boot flow consistent
+      const ok = await initDb();
+      if (!ok) throw new Error('DB init failed');
 
       const inputFile = inputFilePath || CONFIG.inputFile;
       if (!fs.existsSync(inputFile)) throw new Error(`Input file not found: ${inputFile}`);
 
-      // Load Excel
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.readFile(inputFile);
       const ws = workbook.getWorksheet(1);
       if (!ws) throw new Error('Worksheet 1 is missing');
 
-      // Resolve headers; defaults: col 1 = Артикул, col 2 = Брэнд
       let colPart = 1;
       let colBrand = 2;
       const headerRow = ws.getRow(1);
@@ -204,53 +228,49 @@ module.exports = {
         });
       }
 
-      // Build JOHN DEERE tasks
       const tasks = [];
       ws.eachRow((row, rowNumber) => {
         if (rowNumber === 1) return;
         const partCell = row.getCell(colPart).value;
         const brandCell = row.getCell(colBrand).value;
         if (partCell == null || brandCell == null) return;
-
         const partNumber = String(partCell).trim();
         const brandName = String(brandCell).trim();
         if (!partNumber) return;
-        if (brandName.toUpperCase() !== 'JOHN DEERE') return;
-
-        tasks.push({ brandName: 'JOHN DEERE', partNumber });
+        tasks.push({ brandName, partNumber });
       });
 
-      const finalTasks =
-        CONFIG.maxPartsToProcess > 0 ? tasks.slice(0, CONFIG.maxPartsToProcess) : tasks;
-
+      const finalTasks = CONFIG.maxPartsToProcess > 0 ? tasks.slice(0, CONFIG.maxPartsToProcess) : tasks;
       sharedTaskQueue = [...finalTasks];
-      const total = finalTasks.length;
-      if (total === 0) return [];
+      if (finalTasks.length === 0) return [];
 
-      // Init workers
-      const workerInitPromises = CONFIG.browser.instances.map(async (conf, idx) => {
-        try {
-          const w = new ParallelScraper(conf, idx + 1);
-          await w.initialize();
-          return w;
-        } catch (e) {
-          return null;
-        }
-      });
-
-      const workers = (await Promise.all(workerInitPromises)).filter(Boolean);
-      if (workers.length === 0) throw new Error('No scraper workers could be initialized.');
+      const workerCount = CONFIG.maxConcurrentInstances;
+      const workers = [];
+      for (let i = 0; i < workerCount; i++) {
+        const w = new ParallelScraper(i + 1);
+        await w.initialize();
+        workers.push(w);
+      }
 
       await Promise.all(workers.map(w => w.workerLoop(tick)));
 
-      // Aggregate results across workers into a flat array of { price_id, cost }
+      for (const w of workers) {
+        if (w.buffer && w.buffer.length) {
+          dbManager.dumpToDb('prices', w.buffer);
+          w.buffer = [];
+        }
+      }
+
       const aggregated = workers.flatMap(w => w.results);
 
       await Promise.all(workers.map(w => w.close()));
       onForceRefresh();
 
+      if (aggregated.length) dbManager.dumpToDb('prices', aggregated);
+
       return aggregated;
     } catch (err) {
+      console.error('FATAL in runWithProgress:', err.message);
       return { error: err.message };
     } finally {
       isScraping = false;

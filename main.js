@@ -4,9 +4,10 @@ const originalLog = console.log;
 const originalErr = console.error;
 const path = require('path');
 const fs = require('fs');
-const dataEntry = require('./db/db_Manager');
-const priceScraper = require('./scraper/pbScraper');
-const {data} = require('node-persist');
+const dbManager = require('./db/db_Manager');
+const {wipeDatabase} = dbManager
+const pbScraper = require('./scraper/pbScraper');
+//const {data} = require('node-persist');
 
 //log forwarding
 function broadcastLog(level, ...args) {
@@ -32,7 +33,7 @@ function createWindow() {
   });
 
   // Listen for dump progress from the unified DB entry point
-  dataEntry.onDumpProgress((payload) => {
+  dbManager.onDumpProgress((payload) => {
     console.log('[MAIN] forwarding ui:db-dump-progress', payload);
     if (win && !win.isDestroyed()) {
       win.webContents.send('ui:db-dump-progress', payload);
@@ -91,10 +92,10 @@ ipcMain.handle('scrape-prices', async (event, inputFilePath) => {
 //HANDLERS
 ipcMain.handle('get-table-data', async () => {
   try {
-    const tables = dataEntry.query(`SELECT name FROM sqlite_master WHERE type='table'`);
+    const tables = dbManager.query(`SELECT name FROM sqlite_master WHERE type='table'`);
     const data = {};
     for (const t of tables) {
-      data[t.name] = dataEntry.query(`SELECT * FROM ${t.name}`);
+      data[t.name] = dbManager.query(`SELECT * FROM ${t.name}`);
     }
     return { success: true, data };
   } catch (error) {
@@ -104,14 +105,14 @@ ipcMain.handle('get-table-data', async () => {
 
 
 ipcMain.handle('wipe-db', async () => {
-  const result = await dataEntry.wipeDatabase();
+  const result = await dbManager.wipeDatabase();
   return result;
 });
 
 
 ipcMain.handle('query-part', async (event, partNumber) => {
   try {
-    const result = await dataEntry.queryVehiclesForPart(partNumber);
+    const result = await dbManager.queryVehiclesForPart(partNumber);
     return result;
   } catch (err) {
     return { error: err.message };
@@ -134,7 +135,7 @@ ipcMain.handle('select-excel-file', async () => {
 
 
 ipcMain.handle('download-csv', async () => {
-  const result = await dataEntry.generateCsvFiles();
+  const result = await dbManager.generateCsvFiles();
   return result; 
 });
 
@@ -149,7 +150,7 @@ ipcMain.handle('open-folder', async (_evt, folderPath) => {
 
 app.on('window-all-closed', () => {
   try {
-    dataEntry.disconnect(); // unified DB close
+    dbManager.disconnect(); // unified DB close
   } catch (e) {
     console.warn('DB disconnect warning:', e?.message || e);
   }
@@ -157,7 +158,7 @@ app.on('window-all-closed', () => {
 });
 
 process.on('SIGTERM', () => {
-  try { dataEntry.disconnect(); } catch {}
+  try { dbManager.disconnect(); } catch {}
   app.quit();
 });
 

@@ -28,7 +28,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const partInput         = document.getElementById('partNumberInput');
   const queryPartBtn      = document.getElementById('queryPartBtn');
   const selectFileBtn     = document.getElementById('selectFileBtn');
-  const startTechniqueBtn = document.getElementById('startTechniqueBtn'); //rename to startVehicleBtn
+  const startPricesBtn = document.getElementById('startPricesBtn'); //rename to startVehicleBtn
   const startNodesBtn     = document.getElementById('startNodesBtn');
   const filePathDisplay   = document.getElementById('filePathDisplay');
   const progressBar       = document.querySelector('#progressBar > div');
@@ -246,7 +246,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (fp) {
         selectedFilePath = fp;
         filePathDisplay.textContent = `Selected: ${fp.split('\\').pop()}`;
-        startTechniqueBtn.disabled = false;
+        startPricesBtn.disabled = false;
       } else {
         showNotification('No file selected');
       }
@@ -255,22 +255,22 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  startTechniqueBtn.addEventListener('click', async () => {
+  startPricesBtn.addEventListener('click', async () => {
     if (!selectedFilePath) {
       showNotification('Please select an Excel file first', true);
       return;
     }
-    startTechniqueBtn.disabled = true;
-    startTechniqueBtn.textContent = 'Запуск Цен...';
+    startPricesBtn.disabled = true;
+    startPricesBtn.textContent = 'Запуск Цен...';
     try {
-      const res = await window.electronAPI.scrapeVehicles(selectedFilePath);
+      const res = await window.electronAPI.scrapePrices(selectedFilePath);
       if (res.error) throw new Error(res.error);
       showNotification(res.message || 'Completed!');
     } catch (err) {
       showNotification(`Error: ${err.message}`, true);
     } finally {
-      startTechniqueBtn.disabled = false;
-      startTechniqueBtn.textContent = 'Запустить Цены';
+      startPricesBtn.disabled = false;
+      startPricesBtn.textContent = 'Запустить Цены';
     }
   });
   

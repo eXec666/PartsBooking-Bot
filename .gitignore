@@ -5,6 +5,7 @@ node_modules/
 dist/
 JD/package-lock.json
 data/
+.vs/
 
 # CSV temp results file
 output/

@@ -5,13 +5,18 @@ const { DB_PATH } = require('../db/db_config');
 const schema = `
 CREATE TABLE IF NOT EXISTS prices (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  part_number TEXT NOT NULL,
-  brand_name TEXT NOT NULL,
-  our_price INTEGER NOT NULL,
-  site_code INTEGER NOT NULL,
-  under_price INTEGER NOT NULL,
-  over_price INTEGER NOT NULL,
-  rankPos INTEGER NOT NULL,
+  part_number TEXT,
+  brand_name  TEXT,
+  rank_pos    INTEGER,
+  our_price   NUMERIC,
+  site_code   TEXT,
+  leader_code TEXT,
+  leader_price NUMERIC,
+  over_code   TEXT,
+  over_price  NUMERIC,
+  under_code  TEXT,
+  under_price NUMERIC,
+  created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(part_number, site_code)
 );
 
@@ -25,27 +30,10 @@ function initDb() {
     db = new Database(DB_PATH);
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
-
-    const tableCheck = db
-      .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='prices'`)
-      .get();
-
-    if (!tableCheck) {
-      console.log('Creating database schema...');
-      db.exec(schema);
-
-      const tables = db
-        .prepare(`SELECT name FROM sqlite_master WHERE type='table'`)
-        .all();
-      console.log('Created tables:', tables.map(t => t.name));
-    } else {
-      console.log('Database already initialized');
-    }
-
+    db.exec(schema);
     return true;
   } catch (err) {
     console.error('Database initialization failed:', err);
-
     try {
       if (db) db.close();
       require('fs').unlinkSync(DB_PATH);
@@ -59,8 +47,5 @@ function initDb() {
   }
 }
 
-if (require.main === module) {
-  initDb();
-}
-
+if (require.main === module) initDb();
 module.exports = initDb;

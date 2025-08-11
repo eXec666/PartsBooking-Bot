@@ -6,7 +6,7 @@ const testInput = [
 ];
 
 function rankPrice(slag) {
-    const ourCode = 1643;
+    const ourCode = 1269;
     let isLeader = false;
     let output = {
         partNumber: null,

@@ -1,214 +1,145 @@
-const {EventEmitter} = require('events');
+// db/db_Manager.js
+const { EventEmitter } = require('events');
 const Database = require('better-sqlite3');
-const path = require('path');
-const {DB_PATH} = require('./db_config');
+const { DB_PATH } = require('./db_config');
 const initDb = require('./init_db');
-const fs = require('fs');
-const {app} = require('electron');
 
-
-let activeWriters = 0;
-let writeGateOpen = true;
-let isWiping = false;
-
-let dbInstance = null;
+// single shared connection
+let db = null;
 const bus = new EventEmitter();
 
-//new helper functions
-function nowIso() {return new Date().toISOString();}
-function sleep(ms) {return new Promise(r => setTimeout(r,ms));}
-
-async function waitForIdle(timeoutMs = 5000) {
-    const deadline = Date.now() + timeoutMs;
-    while (activeWriters > 0 && Date.now() < deadline) {
-        await sleep(50);
-    }
-    return activeWriters === 0;
-}
-
-const MAX_ROWS_PER_FILE = 5000;
-
-async function retryDelete(filePath, tries = 15, delayMs = 200) {
-   const fs = require('fs');
-   for (let i = 0; i < tries; i++) {
-    try {
-        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-        return true;
-    } catch (err) {
-        if ((err.code === 'EBUSY' || err.code === 'EPERM') && i < tries - 1) {
-            await sleep(delayMs);
-            continue;
-        }
-        if (err.code === 'ENOENT') return true;
-        throw err;
-    }
-   }
-   return false; 
-}
-
-// db functions
-
 function connect() {
-    if (dbInstance && dbInstance.open) {
-        return dbInstance;
-    }
-    dbInstance = new Database(DB_PATH);
-    dbInstance.pragma('journal_mode = WAL');
-    dbInstance.pragma('foreign_keys = ON');
-    return dbInstance;
+  if (!db) {
+    initDb();
+    db = new Database(DB_PATH);
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = NORMAL');
+  }
+  return db;
 }
 
 function disconnect() {
-    if (dbInstance && dbInstance.open) {
-        dbInstance.close();
-        dbInstance = null;
-    }
-}
-
-function query(sql, params = []) {
-  const db = connect();
-  const stmt = db.prepare(sql);
-  return Array.isArray(params) && params.length ? stmt.all(params) : stmt.all();
-}
-
-
-
-async function wipeDatabase() {
-  if (isWiping) return { success: false, error: 'Wipe already in progress.' };
-  isWiping = true;
-  console.log(`[${nowIso()}] [ENTRY] Wiping database...`);
-
-  try {
-    // 1) Close the gate so no new writers can start
-    writeGateOpen = false;
-
-    // 2) Wait for in-flight writers to finish (up to 8s)
-    const wentIdle = await waitForIdle(8000);
-    if (!wentIdle) {
-      console.warn(`[${nowIso()}] [ENTRY] Wipe proceeding after idle timeout; force-closing DB handle.`);
-    }
-
-    // 3) Checkpoint WAL and close the singleton handle, if open
-    try {
-      if (!dbInstance || !dbInstance.open) {
-        // open a temp handle just to checkpoint if needed
-        dbInstance = new Database(DB_PATH);
-      }
-      // Move WAL contents into main DB and truncate WAL
-      dbInstance.pragma('wal_checkpoint(TRUNCATE)');
-    } catch (e) {
-      console.log(`[${nowIso()}] [ENTRY] wal_checkpoint note: ${e.message}`);
-    } finally {
-      if (dbInstance && dbInstance.open) {
-        try { dbInstance.close(); } catch (_) {}
-      }
-      dbInstance = null;
-    }
-
-    // 4) Delete DB + sidecar files with retry (Windows EBUSY/EPERM safe)
-    const wal = `${DB_PATH}-wal`;
-    const shm = `${DB_PATH}-shm`;
-
-    const okMain = await retryDelete(DB_PATH);
-    const okWal  = await retryDelete(wal);
-    const okShm  = await retryDelete(shm);
-
-    if (!okMain) {
-      throw new Error(`Could not delete DB file after retries: ${DB_PATH}`);
-    }
-
-    // 5) Reinitialize schema
-    await initDb();
-    console.log(`[${nowIso()}] [ENTRY] Database wiped and reinitialized.`);
-
-    return { success: true, message: 'Database wiped and reinitialized' };
-  } catch (err) {
-    console.error(`[${nowIso()}] [ENTRY] wipeDatabase failed:`, err);
-    return { success: false, error: err.message };
-  } finally {
-    // 6) Reopen the gate for future writes
-    writeGateOpen = true;
-    isWiping = false;
+  if (db) {
+    try { db.close(); } catch (_) {}
+    db = null;
   }
 }
 
-function getPartIdByNumber(partNumber) {
-    const db = connect();
-    const row = db.prepare('SELECT part_id FROM parts WHERE part_number = ?').get(partNumber);
-    return row ? row.part_id : null;
-}
+/**
+ * Rank a list of [siteCode, price] pairs and produce a summary row.
+ * @param {Array<[number|string, number|string]>} slag
+ * @param {number|string} ourCode
+ * @param {string} partNumber
+ * @param {string} brandName
+ */
+function rankPrice(slag, ourCode, partNumber, brandName) {
+  const out = {
+    part_number: partNumber ?? null,
+    brand_name: brandName ?? null,
+    rank_pos: null,
+    our_price: null,
+    site_code: ourCode ?? null,
+    leader_code: null,
+    leader_price: null,
+    over_code: null,
+    over_price: null,
+    under_code: null,
+    under_price: null
+  };
 
-function dumpToDb(tableName, data) {
-  if (!data || data.length === 0) return { message: 'No data to dump.' };
-  if (!writeGateOpen) {
-    console.warn(`[${nowIso()}] [ENTRY] dumpToDb blocked: wipe in progress (table=${tableName})`);
-    return { success: false, error: 'DB is being wiped. Try again shortly.' };
-  }
+  if (!Array.isArray(slag) || slag.length === 0) return out;
 
-  const db = connect();
-  activeWriters++; // track an in-flight writer
+  const normalized = slag
+    .map(p => [p?.[0], p?.[1]])
+    .filter(p => p[0] != null && p[1] != null)
+    .map(p => [String(p[0]), typeof p[1] === 'string'
+      ? Number(p[1].toString().replace(/\s/g, ''))
+      : Number(p[1])])
+    .filter(p => Number.isFinite(p[1]));
 
-  let insertStmt;
-  switch (tableName) {
-    case 'vehicles':
-      insertStmt = db.prepare('INSERT OR IGNORE INTO vehicles (vehicle_id, vehicle_name, equipment_ref_id) VALUES (?, ?, ?)');
-      break;
-    case 'parts':
-      insertStmt = db.prepare('INSERT OR IGNORE INTO parts (part_id, part_number) VALUES (?, ?)');
-      break;
-    case 'compatibility':
-      insertStmt = db.prepare('INSERT OR IGNORE INTO compatibility (part_id, vehicle_id) VALUES (?, ?)');
-      break;
-    case 'nodes':
-      insertStmt = db.prepare('INSERT OR IGNORE INTO nodes (node_id, node_desc) VALUES (?, ?)');
-      break;
-    case 'part_vehicle_nodes':
-      insertStmt = db.prepare('INSERT OR IGNORE INTO part_vehicle_nodes (part_id, vehicle_id, node_id) VALUES (?, ?, ?)');
-      break;
-    default:
-      activeWriters = Math.max(0, activeWriters - 1);
-      throw new Error(`Unsupported table: ${tableName}`);
-  }
+  if (normalized.length === 0) return out;
 
-  const total = data.length;
-  let done = 0;
+  normalized.sort((a, b) => a[1] - b[1]);
 
-  const tx = db.transaction((rows) => {
-    for (const row of rows) {
-      try {
-        insertStmt.run(Object.values(row));
-        done++;
-        const percent = Math.round((done / total) * 100);
-        const payload = { table: tableName, done, total, percent };
-        bus.emit('dump-progress', payload);
-        console.log('[DB] dump-progress', payload);
-      } catch (err) {
-        console.error(`Error inserting into ${tableName}:`, err.message);
-      }
+  // annotate with rank
+  normalized.forEach((item, i) => {
+    const pos = i + 1;
+    item.push(pos); // [code, price, pos]
+    if (item[0] === String(ourCode)) {
+      out.rank_pos = pos;
+      out.our_price = item[1];
     }
   });
 
-  try {
-    tx(data);
-    return { success: true, inserted: done, total };
-  } catch (err) {
-    console.error(`Dump to ${tableName} failed:`, err.message);
-    return { error: err.message };
-  } finally {
-    activeWriters = Math.max(0, activeWriters - 1); // writer finished
+  const leader = normalized.find(x => x[2] === 1);
+  const over   = normalized.find(x => x[2] === (out.rank_pos ?? 0) - 1);
+  const under  = normalized.find(x => x[2] === (out.rank_pos ?? 0) + 1);
+
+  const weAreLeader = leader && leader[0] === String(ourCode);
+
+  if (weAreLeader) {
+    out.leader_code  = 'G&G Leader';
+    out.leader_price = out.our_price;
+    out.over_code    = 'G&G Leader';
+    out.over_price   = null;
+  } else if (leader) {
+    out.leader_code  = leader[0];
+    out.leader_price = leader[1];
   }
+
+  if (over) {
+    out.over_code  = over[0];
+    out.over_price = over[1];
+  }
+  if (under) {
+    out.under_code  = under[0];
+    out.under_price = under[1];
+  }
+
+  return out;
+}
+
+/**
+ * Dump an array of ranked price objects into the prices table.
+ * Accepts objects with keys that match init_db schema.
+ * Emits 'dump-progress' events with counts.
+ * @param {'prices'} tableName
+ * @param {Array<object>} rows
+ */
+function dumpToDb(tableName, rows) {
+  if (tableName !== 'prices') {
+    throw new Error(`Unsupported table: ${tableName}`);
+  }
+  if (!Array.isArray(rows) || rows.length === 0) return { inserted: 0 };
+
+  const dbc = connect();
+
+  const insert = dbc.prepare(`
+    INSERT OR REPLACE INTO prices
+      (part_number, brand_name, rank_pos, our_price, site_code,
+       leader_code, leader_price, over_code, over_price, under_code, under_price)
+    VALUES (@part_number, @brand_name, @rank_pos, @our_price, @site_code,
+            @leader_code, @leader_price, @over_code, @over_price, @under_code, @under_price)
+  `);
+
+  const tx = dbc.transaction((batch) => {
+    for (const r of batch) insert.run(r);
+  });
+
+  tx(rows);
+  bus.emit('dump-progress', { table: 'prices', count: rows.length });
+
+  return { inserted: rows.length };
 }
 
 function onDumpProgress(handler) {
-    bus.on('dump-progress', handler);
+  bus.on('dump-progress', handler);
 }
 
 module.exports = {
-    connect,
-    disconnect,
-    dumpToDb,
-    query,
-    wipeDatabase,
-    onDumpProgress,
-    getPartIdByNumber
-}
+  connect,
+  disconnect,
+  dumpToDb,
+  rankPrice,
+  onDumpProgress
+};
