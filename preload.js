@@ -10,20 +10,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Excel file import & scraping
   selectExcelFile:       () => ipcRenderer.invoke('select-excel-file'),
-  scrapeVehicles:        (filePath) => ipcRenderer.invoke('scrape-vehicles', filePath),
-  scrapeNodes:           () => ipcRenderer.invoke('scrape-nodes'),
-
-  // Part lookups & suggestions
-  queryPart:             (partNumber) => ipcRenderer.invoke('query-part', partNumber),
-  queryPartSuggestions:  (query)       => ipcRenderer.invoke('query-part-suggestions', query),
-
-  // Node details
-  getNodeDetails:        (partNumber, vehicleId) => 
-                          ipcRenderer.invoke('get-node-details', partNumber, vehicleId),
-
+  scrapePrices:        (filePath) => ipcRenderer.invoke('scrape-prices', filePath),
+  
   // Database viewer (legacy call—now routed into same window)
   openDbViewer:   () => ipcRenderer.send('open-db-viewer'),
   getTableData:   (table) => ipcRenderer.invoke('get-table-data', table),
+  
   downloadCsv: () => ipcRenderer.invoke('download-csv'),
 
 

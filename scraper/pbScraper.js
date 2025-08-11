@@ -9,8 +9,12 @@ const ExcelJS = require('exceljs');
 const { app } = require('electron');
 
 const initDb = require('../db/init_db');
+const dbManager = require('../db/db_Manager');
+const { rankPrice } = dbManager;
 
 puppeteer.use(StealthPlugin());
+
+const BATCH_SIZE = 100;
 
 // --- Configuration ---
 const CONFIG = {
@@ -19,13 +23,11 @@ const CONFIG = {
   baseUrl: 'https://partsbooking.ru/products',
   apiBase: 'https://partsbooking.ru/backend/v3/www/3.0.1/price_search/search',
   regionId: 28,
+  ourSiteCode: 1269, // update if our site code changes
   maxPartsToProcess: 0, // 0 = all
   maxConcurrentInstances: Math.max(1, Math.floor(os.cpus().length * 0.75)),
   requestThrottle: 1200,
-  navigation: {
-    timeout: 45000,
-    waitUntil: 'networkidle2'
-  },
+  navigation: { timeout: 45000, waitUntil: 'networkidle2' },
   browser: {
     headless: true,
     executablePath: null,
@@ -48,10 +50,7 @@ const CONFIG = {
       })
     )
   },
-  debug: {
-    saveScreenshots: false,
-    screenshotPath: path.join(os.homedir(), 'prices-scraper-debug')
-  }
+  debug: { saveScreenshots: false, screenshotPath: path.join(os.homedir(), 'prices-scraper-debug') }
 };
 
 const sleep = ms => new Promise(res => setTimeout(res, ms));
@@ -63,7 +62,8 @@ class ParallelScraper {
   constructor(config, instanceId) {
     this.config = config;
     this.instanceId = instanceId;
-    this.results = [];
+    this.results = []; // ranked rows for reporting/return
+    this.buffer = [];  // pending rows to dump to DB in batches
   }
 
   async initialize() {
@@ -87,24 +87,20 @@ class ParallelScraper {
     );
     await this.page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8' });
 
-    // Preload the site once to establish cookies/session.
-    await this.page.goto(CONFIG.baseUrl, {
-      waitUntil: CONFIG.navigation.waitUntil,
-      timeout: CONFIG.navigation.timeout
-    }).catch(() => {});
+    // warm-up
+    await this.page
+      .goto(CONFIG.baseUrl, { waitUntil: CONFIG.navigation.waitUntil, timeout: CONFIG.navigation.timeout })
+      .catch(() => {});
   }
 
-  // Encode space as + for make_name
   encodeForQuery(v) { return encodeURIComponent(v).replace(/%20/g, '+'); }
 
   buildSearchUrl(brandName, partNumber) {
     const make_name = this.encodeForQuery(String(brandName).trim());
     const oem = encodeURIComponent(String(partNumber).trim());
-    // Optional query members left empty intentionally to mirror found request
     const q = [
       `make_name=${make_name}`,
       `oem=${oem}`,
-      // detail_name optional; omit to avoid over-encoding issues
       'customer_id',
       'app_token',
       `region_id=${CONFIG.regionId}`,
@@ -116,14 +112,11 @@ class ParallelScraper {
 
   async fetchPriceItems(brandName, partNumber) {
     const url = this.buildSearchUrl(brandName, partNumber);
-    // Use page context fetch to bypass CORS and share cookies.
     return await this.page.evaluate(async (requestUrl) => {
       const res = await fetch(requestUrl, {
         method: 'GET',
         credentials: 'include',
-        headers: {
-          'Accept': 'application/json, text/plain, */*',
-        }
+        headers: { 'Accept': 'application/json, text/plain, */*' }
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return await res.json();
@@ -134,15 +127,30 @@ class ParallelScraper {
     const { brandName, partNumber } = task;
     try {
       const json = await this.fetchPriceItems(brandName, partNumber);
-
       const items = Array.isArray(json?.price_items) ? json.price_items : [];
-      const compact = items.map(x => ({
-        price_id: x?.price_id ?? null,
-        cost: x?.cost ?? null
-      }));
 
-      this.results.push(...compact);
-      return { ok: true, count: compact.length, partNumber };
+      // Normalize API items to [site_code, price]
+      const slag = items
+        .map(x => [x?.price_id ?? x?.site_code ?? null, x?.cost ?? x?.price ?? null])
+        .filter(p => p[0] != null && p[1] != null);
+
+      // Build one ranked row for this (brand, partNumber)
+      const ranked = rankPrice(slag, CONFIG.ourSiteCode, partNumber, brandName);
+
+      // Collect in memory and stage for DB
+      this.results.push(ranked);
+      this.buffer.push(ranked);
+
+      // Batch dump
+      if (this.buffer.length >= BATCH_SIZE) {
+        try {
+          dbManager.dumpToDb('prices', this.buffer);
+        } finally {
+          this.buffer = [];
+        }
+      }
+
+      return { ok: true, count: slag.length, partNumber };
     } catch (err) {
       return { ok: false, error: err.message, partNumber };
     }
@@ -169,11 +177,7 @@ class ParallelScraper {
 let isScraping = false;
 
 module.exports = {
-  runWithProgress: async function (
-    progressCallback = () => {},
-    onForceRefresh = () => {},
-    inputFilePath = null
-  ) {
+  runWithProgress: async function (progressCallback = () => {}, onForceRefresh = () => {}, inputFilePath = null) {
     if (isScraping) return { message: 'Scraping is already in progress.' };
     isScraping = true;
 
@@ -181,7 +185,7 @@ module.exports = {
     const tick = () => progressCallback(null, `Processed ${++tickCount}`);
 
     try {
-      await initDb(); // keep boot flow consistent
+      await initDb();
 
       const inputFile = inputFilePath || CONFIG.inputFile;
       if (!fs.existsSync(inputFile)) throw new Error(`Input file not found: ${inputFile}`);
@@ -204,7 +208,7 @@ module.exports = {
         });
       }
 
-      // Build JOHN DEERE tasks
+      // Build tasks (keep JOHN DEERE filter consistent with previous run logic; adjust as needed)
       const tasks = [];
       ws.eachRow((row, rowNumber) => {
         if (rowNumber === 1) return;
@@ -220,12 +224,9 @@ module.exports = {
         tasks.push({ brandName: 'JOHN DEERE', partNumber });
       });
 
-      const finalTasks =
-        CONFIG.maxPartsToProcess > 0 ? tasks.slice(0, CONFIG.maxPartsToProcess) : tasks;
-
+      const finalTasks = CONFIG.maxPartsToProcess > 0 ? tasks.slice(0, CONFIG.maxPartsToProcess) : tasks;
       sharedTaskQueue = [...finalTasks];
-      const total = finalTasks.length;
-      if (total === 0) return [];
+      if (finalTasks.length === 0) return [];
 
       // Init workers
       const workerInitPromises = CONFIG.browser.instances.map(async (conf, idx) => {
@@ -233,7 +234,7 @@ module.exports = {
           const w = new ParallelScraper(conf, idx + 1);
           await w.initialize();
           return w;
-        } catch (e) {
+        } catch {
           return null;
         }
       });
@@ -243,11 +244,22 @@ module.exports = {
 
       await Promise.all(workers.map(w => w.workerLoop(tick)));
 
-      // Aggregate results across workers into a flat array of { price_id, cost }
+      // Flush remaining per-worker buffers
+      for (const w of workers) {
+        if (w.buffer && w.buffer.length) {
+          dbManager.dumpToDb('prices', w.buffer);
+          w.buffer = [];
+        }
+      }
+
+      // Aggregate ranked rows for return
       const aggregated = workers.flatMap(w => w.results);
 
       await Promise.all(workers.map(w => w.close()));
       onForceRefresh();
+
+      // Optional final safeguard (idempotent due to INSERT OR REPLACE)
+      if (aggregated.length) dbManager.dumpToDb('prices', aggregated);
 
       return aggregated;
     } catch (err) {
