@@ -6,6 +6,7 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const ExcelJS = require('exceljs');
 const { app } = require('electron');
+
 const initDb = require('../db/init_db');
 const dbManager = require('../db/db_Manager');
 const { rankPrice } = dbManager;
@@ -14,7 +15,7 @@ puppeteer.use(StealthPlugin());
 
 const CONFIG = {
   inputFile: path.join(process.resourcesPath || __dirname, 'prices_input.xlsx'),
-  ourSiteCode: 1269,
+  ourSiteCode: 1269, // kept as-is for rankPrice signature compatibility
   maxPartsToProcess: 0,
   maxConcurrentInstances: Math.max(1, Math.min(2, os.cpus().length)),
   requestThrottle: 1200,
@@ -94,21 +95,51 @@ class ParallelScraper {
       const productUrl = this.buildProductUrl(brandName, partNumber);
       console.log(`[worker ${this.instanceId}] Navigating to: ${productUrl}`);
 
-      await this.page.goto(productUrl, CONFIG.navigation);
+      let priceItems = null;
 
-      // TODO: Replace this placeholder with your page scraping logic
-      // For now we'll just grab all script JSON and parse price_items if available
-      const data = await this.page.evaluate(() => {
-        const scripts = Array.from(document.querySelectorAll('script')).map(s => s.textContent);
-        return scripts.join('\n');
+      // Set up listener to catch the API payload
+      this.page.on('response', async (response) => {
+        const url = response.url();
+        if (url.includes('/price_search/search')) {
+          try {
+            const json = await response.json();
+
+            // DEBUG: Log full JSON payload
+            console.log(`[worker ${this.instanceId}] Full payload for ${partNumber}:`, JSON.stringify(json, null, 2));
+
+            if (json && json.price_items) {
+              priceItems = json.price_items;
+              console.log(`[worker ${this.instanceId}] Captured ${priceItems.length} price items for ${partNumber}`);
+            }
+          } catch (err) {
+            console.error(`[worker ${this.instanceId}] Failed to parse price_search JSON: ${err.message}`);
+          }
+        }
       });
 
-      // You'd parse `data` here to extract site_code and price info
-      // The following is placeholder logic:
-      const priceItems = []; // parse from `data` when you implement
+      await this.page.goto(productUrl, CONFIG.navigation);
+
+      // Give some time for the API to fire
+      await sleep(2500);
+
+      if (!priceItems) {
+        console.warn(`[worker ${this.instanceId}] No price_items found for ${partNumber}`);
+        return { ok: false, error: 'No price_items', partNumber };
+      }
+
+      // Transform into [price_id, cost]
       const slag = priceItems
-        .map(x => [x?.price_id ?? x?.site_code ?? null, x?.cost ?? x?.price ?? null])
+        .map(x => {
+          const pid = x?.price_id ?? x?.id ?? null;
+          const c = x?.cost ?? x?.price ?? null;
+          if (pid != null && c != null) {
+            console.log(`[worker ${this.instanceId}] Picked fields for ${partNumber}: price_id=${pid}, cost=${c}`);
+          }
+          return [pid, c];
+        })
         .filter(p => p[0] != null && p[1] != null);
+
+      console.log(`[worker ${this.instanceId}] Total picked for ${partNumber}: ${slag.length}`);
 
       const ranked = rankPrice(slag, CONFIG.ourSiteCode, partNumber, brandName);
 
@@ -127,6 +158,8 @@ class ParallelScraper {
     } catch (err) {
       console.error(`[worker ${this.instanceId}] task ${partNumber} failed: ${err.message}`);
       return { ok: false, error: err.message, partNumber };
+    } finally {
+      this.page.removeAllListeners('response');
     }
   }
 
