@@ -43,8 +43,7 @@
 
         <div class="btn-group">
           <button id="selectFileBtn" class="btn" type="button">Выбрать Excel файл</button>
-          <button id="startPricesBtn" class="btn btn--primary" type="button" disabled>Запустить технику</button>
-          <button id="startNodesBtn" class="btn btn--secondary" type="button">Запустить узлы</button>
+          <button id="startPricesBtn" class="btn btn--primary" type="button" disabled>Запустить анализ цен</button>
         </div>
 
         <div id="filePathDisplay" class="muted">Файл не выбран</div>
@@ -67,7 +66,71 @@
           <button id="downloadCsvBtn" class="btn" type="button">CSV</button>
         </div>
 
-        <div id="dbViewer" class="db-viewer"></div>
+        <div id="dbViewer" class="db-viewer">
+          <!-- Scoped viewer header is optional, you can remove if you already have an h2 above -->
+          <!-- <h3 style="margin-top:0">База Данных Совместимости</h3> -->
+
+          <div class="dbv-tabs">
+            <button class="dbv-tab dbv-active" data-tab="parts">Детали</button>
+            <button class="dbv-tab" data-tab="vehicles">Модели</button>
+            <button class="dbv-tab" data-tab="compatibility">Совместимость</button>
+            <button class="dbv-tab" data-tab="nodes">Узлы</button>
+          </div>
+
+          <div class="dbv-search">
+            <input type="text" id="dbv-searchInput" placeholder="Поиск..." />
+            <button id="dbv-refreshButton" type="button">⟳ Обновить</button>
+          </div>
+
+          <div class="dbv-pane dbv-active" id="dbv-parts">
+            <table id="dbv-parts-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Артикул</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+
+          <div class="dbv-pane" id="dbv-vehicles">
+            <table id="dbv-vehicles-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Модель</th>
+                  <th>Equipment Ref ID</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+
+          <div class="dbv-pane" id="dbv-compatibility">
+            <table id="dbv-compatibility-table">
+              <thead>
+                <tr>
+                  <th>Vehicle ID</th>
+                  <th>Part ID</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+
+          <div class="dbv-pane" id="dbv-nodes">
+            <table id="dbv-nodes-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Описание узла</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
 
         <section id="db-dump-section" class="db-dump">
           <h3>Импорт из Excel</h3>

@@ -317,6 +317,8 @@ input::placeholder { color: var(--text-muted); }
   background: rgba(148, 163, 184, .08);
 }
 
+
+
 /* ---------- 10) Logs ---------- */
 .logs-window {
   margin-top: var(--space-4);
@@ -364,3 +366,42 @@ input::placeholder { color: var(--text-muted); }
   .tabs { border-radius: var(--radius); }
   .app-title { display: none; } /* save space; keep logo */
 }
+
+
+  /* ===== Scoped DB Viewer styles ===== */
+  #dbViewer * { box-sizing: border-box; }
+
+  #dbViewer .dbv-tabs {
+    display: flex; gap: 8px; border-bottom: 1px solid #ccc; margin: 10px 0 12px;
+  }
+  #dbViewer .dbv-tab {
+    padding: 8px 14px; cursor: pointer; border: 1px solid transparent;
+    border-bottom: 1px solid #ccc; background: transparent; border-radius: 6px 6px 0 0;
+    font: inherit;
+  }
+  #dbViewer .dbv-tab.dbv-active {
+    border: 1px solid #ccc; border-bottom-color: white; background: white; font-weight: 600;
+  }
+
+  #dbViewer .dbv-search {
+    display: flex; gap: 8px; align-items: center; margin: 8px 0 12px;
+  }
+  #dbViewer .dbv-search input {
+    padding: 8px; width: 280px; border: 1px solid #ddd; border-radius: 6px; font: inherit;
+  }
+  #dbViewer .dbv-search button {
+    padding: 8px 12px; border: none; border-radius: 6px; cursor: pointer; color: #fff; background: #4CAF50;
+  }
+  #dbViewer .dbv-search button:hover { filter: brightness(0.95); }
+
+  #dbViewer .dbv-pane { display: none; padding: 6px 0; }
+  #dbViewer .dbv-pane.dbv-active { display: block; }
+
+  #dbViewer table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+  #dbViewer th, #dbViewer td { padding: 10px; text-align: left; border: 1px solid #e5e5e5; }
+  #dbViewer th { background: #f7f7f7; position: sticky; top: 0; z-index: 1; font-weight: 600; }
+  #dbViewer tbody tr:nth-child(even) { background: #fafafa; }
+  #dbViewer tbody tr:hover { background: #f0f0f0; }
+
+  #dbViewer .dbv-msg { color: #666; font-style: italic; padding: 12px; text-align: center; }
+  #dbViewer .dbv-error { color: #d32f2f; background: #ffebee; padding: 12px; border-radius: 6px; }
