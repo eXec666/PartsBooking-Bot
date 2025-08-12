@@ -36,6 +36,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const wipeDbBtn     = document.getElementById('wipeDbBtn');
   const openDbBtn     = document.getElementById('openDbBtn');
   const downloadCsvBtn = document.getElementById('downloadCsvBtn');
+  const openImagesBtn = document.getElementById('openImagesBtn')
 
   // Logs
   const logsWindow   = document.getElementById('logsWindow');
@@ -189,20 +190,20 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   
   wipeDbBtn.addEventListener('click', async () => {
-  if (confirm('Are you sure you want to wipe the database?')) {
-    try {
-      await window.electronAPI.resetDatabase();
-      showNotification('Database wiped');
+    if (confirm('Are you sure you want to wipe the database?')) {
+      try {
+        await window.electronAPI.resetDatabase();
+        showNotification('Database wiped');
 
-      // Refresh DB tab only if the DB tab is active and dbViewerRenderer is available
-      if (typeof window.dbViewerRenderer?.init === 'function') {
-        window.dbViewerRenderer.init();
+        // Refresh DB tab only if the DB tab is active and dbViewerRenderer is available
+        if (typeof window.dbViewerRenderer?.init === 'function') {
+          window.dbViewerRenderer.init();
+        }
+      } catch (err) {
+        showNotification(`Error: ${err.message}`, true);
       }
-    } catch (err) {
-      showNotification(`Error: ${err.message}`, true);
     }
-  }
-});
+  });
   
   if (openDbBtn) {
     openDbBtn.addEventListener('click', () => {
@@ -220,6 +221,26 @@ document.addEventListener('DOMContentLoaded', () => {
         if (result.error) throw new Error(result.error);
 
         showNotification(result.message || `CSV files saved to: ${result.directory}`);
+        window.electronAPI.openFolder(result.directory);
+      } catch (error) {
+        showNotification(`Error: ${error.message}`, true);
+      } finally {
+        downloadCsvBtn.disabled = false;
+        downloadCsvBtn.textContent = 'Download CSV';
+      }
+    });
+  }
+
+  if (openImagesBtn) {
+    openImagesBtn.addEventListener('click', async () => {
+      openImagesBtn.disabled = true;
+      openImagesBtn.textContent = 'Открываем папку с фото';
+
+      try {
+        const result = await window.electronAPI.openImages();
+        if (result.error) throw new Error(result.error);
+
+        showNotification(result.message || `Photos saved to: ${result.directory}`);
         window.electronAPI.openFolder(result.directory);
       } catch (error) {
         showNotification(`Error: ${error.message}`, true);

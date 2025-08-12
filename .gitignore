@@ -3,7 +3,7 @@ JD/backup.js
 # Ignore Node.js dependencies and build
 node_modules/
 dist/
-JD/package-lock.json
+package-lock.json
 data/
 .vs/
 
