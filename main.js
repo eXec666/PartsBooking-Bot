@@ -139,6 +139,8 @@ ipcMain.handle('download-csv', async () => {
   return result; 
 });
 
+ipcMain.handle('get-images-dir', async () => imagesDir);
+
 
 ipcMain.handle('open-folder', async (_evt, folderPath) => {
   if (!folderPath) return { success: false, error: 'No folder path provided' };

@@ -250,8 +250,7 @@ class ParallelScraper {
 }
 
 let isScraping = false;
-
-module.exports = {
+const api = {
   runWithProgress: async function (progressCallback = () => {}, onForceRefresh = () => {}, inputFilePath = null) {
     if (isScraping) return { message: 'Scraping is already in progress.' };
     isScraping = true;
@@ -331,3 +330,5 @@ module.exports = {
     }
   }
 };
+
+module.exports = api;
