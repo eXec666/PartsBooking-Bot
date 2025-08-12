@@ -245,8 +245,8 @@ document.addEventListener('DOMContentLoaded', () => {
       } catch (error) {
         showNotification(`Error: ${error.message}`, true);
       } finally {
-        downloadImagesBtn.disabled = false;
-        downloadImagesBtn.textContent = 'Открыть фото';
+        openImagesBtn.disabled = false;
+        openImagesBtn.textContent = 'Открыть фото';
       }
     });
   }
