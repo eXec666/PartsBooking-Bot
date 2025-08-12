@@ -55,10 +55,10 @@ ipcMain.handle('scrape-prices', async (event, inputFilePath) => {
       win = windows.find(w => w.isVisible()) || windows[0];
     }
 
-    console.log('🔌 Starting vehicle scraping...');
+    console.log('🔌 Starting scraping...');
     const result = await pbScraper.runWithProgress(
       (percent, message) => {
-        console.log(`📦 Vehicle Progress: ${percent}% - ${message}`);
+        console.log(`📦 Progress: ${percent}% - ${message}`);
         if (win && !win.isDestroyed()) {
           win.webContents.send('progress-update', percent, message);
         }
