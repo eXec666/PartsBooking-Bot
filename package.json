@@ -6,7 +6,7 @@
     "start": "electron ."
   },
   "dependencies": {
-    "better-sqlite3": "^9.0.0",
+    "better-sqlite3": "^12.2.0",
     "electron": "^30.0.0",
     "exceljs": "^4.4.0",
     "puppeteer": "^24.16.1",

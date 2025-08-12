@@ -245,8 +245,8 @@ document.addEventListener('DOMContentLoaded', () => {
       } catch (error) {
         showNotification(`Error: ${error.message}`, true);
       } finally {
-        downloadCsvBtn.disabled = false;
-        downloadCsvBtn.textContent = 'Download CSV';
+        downloadImagesBtn.disabled = false;
+        downloadImagesBtn.textContent = 'Открыть фото';
       }
     });
   }
