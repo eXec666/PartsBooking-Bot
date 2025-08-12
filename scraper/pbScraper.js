@@ -90,94 +90,70 @@ class ParallelScraper {
   }
 
   async processTask(task) {
-    const { brandName, partNumber } = task;
-    try {
-      const productUrl = this.buildProductUrl(brandName, partNumber);
-      console.log(`[worker ${this.instanceId}] Navigating to: ${productUrl}`);
+  const { brandName, partNumber } = task;
+  try {
+    const productUrl = this.buildProductUrl(brandName, partNumber);
+    console.log(`[worker ${this.instanceId}] Navigating to: ${productUrl}`);
 
-      let priceItems = null;
+    let priceItems = null;
 
-      this.page.on('response', async (response) => {
-        const url = response.url();
-        if (url.includes('/price_search/search')) {
-          try {
-            const json = await response.json();
-            if (json && json.price_items) {
-              priceItems = json.price_items;
-              console.log(`[worker ${this.instanceId}] Captured ${priceItems.length} price items for ${partNumber}`);
-            }
-          } catch (err) {
-            console.error(`[worker ${this.instanceId}] Failed to parse price_search JSON: ${err.message}`);
-          }
-        }
-      });
-
-      await this.page.goto(productUrl, CONFIG.navigation);
-      await sleep(2500);
-
-      if (!priceItems) {
-        console.warn(`[worker ${this.instanceId}] No price_items found for ${partNumber}`);
-        return { ok: false, error: 'No price_items', partNumber };
-      }
-
-      const leaderPhraseOriginal = 'Лидер по позиции';
-      const leaderPhraseEnglish = 'Leader in position';
-      const isLeader = Array.isArray(priceItems) && priceItems.some(x => {
-        const s = x?.sys_info?.search_comment || x?.search_comment || '';
-        return typeof s === 'string' && s.includes(leaderPhraseOriginal);
-      });
-
-      if (isLeader) {
-        priceItems = priceItems.map(x => {
-          if (typeof x?.sys_info?.search_comment === 'string' && x.sys_info.search_comment.includes(leaderPhraseOriginal)) {
-            x.sys_info.search_comment = leaderPhraseEnglish;
-          }
-          if (typeof x?.search_comment === 'string' && x.search_comment.includes(leaderPhraseOriginal)) {
-            x.search_comment = leaderPhraseEnglish;
-          }
-          return x;
-        });
-      }
-
-      const slag = priceItems
-        .map(x => {
-          const pid = x?.price_id ?? x?.id ?? null;
-          const c = x?.cost ?? x?.price ?? null;
-          if (pid != null && c != null) {
-            console.log(`[worker ${this.instanceId}] Picked fields for ${partNumber}: price_id=${pid}, cost=${c}`);
-          }
-          return [pid, c];
-        })
-        .filter(p => p[0] != null && p[1] != null);
-
-      console.log(`[worker ${this.instanceId}] Total picked for ${partNumber}: ${slag.length}`);
-
-      const ranked = rankPrice(slag, CONFIG.ourSiteCode, partNumber, brandName);
-
-      if (isLeader && ranked && Object.prototype.hasOwnProperty.call(ranked, 'overPrice')) {
-        ranked.overPrice = null;
-        console.log(`[worker ${this.instanceId}] Leader detected ("${leaderPhraseEnglish}") → forcing ranked.overPrice = null`);
-      }
-
-      this.results.push(ranked);
-      this.buffer.push(ranked);
-
-      if (this.buffer.length >= 100) {
+    this.page.on('response', async (response) => {
+      const url = response.url();
+      if (url.includes('/price_search/search')) {
         try {
-          dbManager.dumpToDb('prices', this.buffer);
-        } finally {
-          this.buffer = [];
+          const json = await response.json();
+          if (json && json.price_items) {
+            priceItems = json.price_items;
+            console.log(`[worker ${this.instanceId}] Captured ${priceItems.length} price items for ${partNumber}`);
+          }
+        } catch (err) {
+          console.error(`[worker ${this.instanceId}] Failed to parse price_search JSON: ${err.message}`);
         }
       }
+    });
 
-      return { ok: true, count: slag.length, partNumber };
-    } catch (err) {
-      console.error(`[worker ${this.instanceId}] task ${partNumber} failed: ${err.message}`);
-      return { ok: false, error: err.message, partNumber };
-    } finally {
-      this.page.removeAllListeners('response');
+    await this.page.goto(productUrl, CONFIG.navigation);
+    await sleep(2500);
+
+    if (!priceItems) {
+      console.warn(`[worker ${this.instanceId}] No price_items found for ${partNumber}`);
+      return { ok: false, error: 'No price_items', partNumber };
     }
+
+    const slag = priceItems
+      .map(x => {
+        const pid = x?.price_id ?? x?.id ?? null;
+        const c = x?.cost ?? x?.price ?? null;
+        if (pid != null && c != null) {
+          console.log(`[worker ${this.instanceId}] Picked fields for ${partNumber}: price_id=${pid}, cost=${c}`);
+        }
+        return [pid, c];
+      })
+      .filter(p => p[0] != null && p[1] != null);
+
+    console.log(`[worker ${this.instanceId}] Total picked for ${partNumber}: ${slag.length}`);
+
+    const ranked = rankPrice(slag, CONFIG.ourSiteCode, partNumber, brandName);
+
+    this.results.push(ranked);
+    this.buffer.push(ranked);
+
+    if (this.buffer.length >= 100) {
+      try {
+        dbManager.dumpToDb('prices', this.buffer);
+      } finally {
+        this.buffer = [];
+      }
+    }
+
+    return { ok: true, count: slag.length, partNumber };
+  } catch (err) {
+    console.error(`[worker ${this.instanceId}] task ${partNumber} failed: ${err.message}`);
+    return { ok: false, error: err.message, partNumber };
+  } finally {
+    this.page.removeAllListeners('response');
   }
+}
 
   async workerLoop(progressCallback) {
     while (true) {

@@ -1,7 +1,7 @@
 // db/db_Manager.js
 const { EventEmitter } = require('events');
 const Database = require('better-sqlite3');
-const { DB_PATH } = require('./db_config');
+const { DB_PATH } = require('./db_config.js');
 const initDb = require('./init_db');
 
 // single shared connection
@@ -38,7 +38,6 @@ function rankPrice(slag, ourCode, partNumber, brandName) {
     brand_name: brandName ?? null,
     rank_pos: null,
     our_price: null,
-    site_code: ourCode ?? null,
     leader_code: null,
     leader_price: null,
     over_code: null,
@@ -116,9 +115,9 @@ function dumpToDb(tableName, rows) {
 
   const insert = dbc.prepare(`
     INSERT OR REPLACE INTO prices
-      (part_number, brand_name, rank_pos, our_price, site_code,
+      (part_number, brand_name, rank_pos, our_price,
        leader_code, leader_price, over_code, over_price, under_code, under_price)
-    VALUES (@part_number, @brand_name, @rank_pos, @our_price, @site_code,
+    VALUES (@part_number, @brand_name, @rank_pos, @our_price,
             @leader_code, @leader_price, @over_code, @over_price, @under_code, @under_price)
   `);
 
