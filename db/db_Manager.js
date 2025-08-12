@@ -26,40 +26,94 @@ function disconnect() {
   }
 }
 
+function checkpoint(truncate = true) {
+  try {
+    const mode = truncate ? 'TRUNCATE' : 'PASSIVE';
+    const res = connect().pragma(`wal_checkpoint(${mode})`);
+    console.log('[db_Manager] wal_checkpoint(%s) =>', mode, res);
+  } catch (e) {
+    console.warn('[db_Manager] wal_checkpoint failed:', e.message);
+  }
+}
 
 
 function wipeDatabase({ mode = 'delete', vacuum = true } = {}) {
+  console.log(`[db_Manager] wipeDatabase: initiated with mode=${mode}, vacuum=${vacuum}`);
+  console.log(`[db_Manager] wipeDatabase: connecting to database at ${DB_PATH}`);
+
   const dbc = connect();
+  const startTs = new Date().toISOString();
+  console.log(`[db_Manager] wipeDatabase: start @ ${startTs}`);
+
   try {
     const count = dbc.prepare(`SELECT COUNT(*) AS c FROM prices`).get().c;
+    console.log(`[db_Manager] wipeDatabase: current rows in prices=${count}`);
 
     if (mode === 'drop-recreate') {
+      console.log('[db_Manager] wipeDatabase: dropping table prices...');
       dbc.exec('BEGIN');
       try {
         dbc.exec('DROP TABLE IF EXISTS prices;');
         dbc.exec('COMMIT');
+        console.log('[db_Manager] wipeDatabase: drop committed. Recreating schema via initDb()...');
       } catch (e) {
         dbc.exec('ROLLBACK');
+        console.error('[db_Manager] wipeDatabase: drop failed, rolled back.', e);
         throw e;
       }
       initDb();
-      if (vacuum) dbc.exec('VACUUM');
+      const exists = dbc.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='prices'").get();
+      console.log(`[db_Manager] wipeDatabase: schema recreated. prices table exists=${!!exists}`);
+      try {
+        const res = dbc.pragma("wal_checkpoint(TRUNCATE)");
+        console.log('[db_Manager] wipeDatabase: wal_checkpoint(TRUNCATE) =>', res);
+      } catch (e) {
+        console.warn('[db_Manager] wipeDatabase: wal_checkpoint failed:', e.message);
+      }
+      if (vacuum) {
+        console.log('[db_Manager] wipeDatabase: running VACUUM...');
+        dbc.exec('VACUUM');
+        console.log('[db_Manager] wipeDatabase: VACUUM complete.');
+      }
+      const endTs = new Date().toISOString();
+      console.log(`[db_Manager] wipeDatabase: finished @ ${endTs}`);
       return { success: true, mode, dropped: true, recreated: true, deletedRows: count };
     }
 
+    console.log('[db_Manager] wipeDatabase: deleting all rows from prices...');
     const tx = dbc.transaction(() => {
       dbc.prepare('DELETE FROM prices').run();
     });
     tx();
 
-    if (vacuum) dbc.exec('VACUUM');
+    const after = dbc.prepare(`SELECT COUNT(*) AS c FROM prices`).get().c;
+    console.log(`[db_Manager] wipeDatabase: delete complete. rows after=${after}`);
 
-    return { success: true, mode, deletedRows: count };
+    try {
+      const res = dbc.pragma("wal_checkpoint(TRUNCATE)");
+      console.log('[db_Manager] wipeDatabase: wal_checkpoint(TRUNCATE) =>', res);
+    } catch (e) {
+      console.warn('[db_Manager] wipeDatabase: wal_checkpoint failed:', e.message);
+    }
+
+    if (vacuum) {
+      console.log('[db_Manager] wipeDatabase: running VACUUM...');
+      dbc.exec('VACUUM');
+      console.log('[db_Manager] wipeDatabase: VACUUM complete.');
+    }
+
+    const endTs = new Date().toISOString();
+    console.log(`[db_Manager] wipeDatabase: finished @ ${endTs}`);
+    console.log('[db_Manager] wipeDatabase: operation complete, verify with viewer after reconnecting to DB.');
+    return { success: true, mode, deletedRows: count, rowsAfter: after };
   } catch (error) {
     console.error('[db_Manager] wipeDatabase failed:', error);
     return { success: false, error: error.message };
   }
 }
+
+
+
 
 /**
  * Rank a list of [siteCode, price] pairs and produce a summary row.
@@ -162,6 +216,7 @@ function dumpToDb(tableName, rows) {
   });
 
   tx(rows);
+  checkpoint(false);
   bus.emit('dump-progress', { table: 'prices', count: rows.length });
 
   return { inserted: rows.length };

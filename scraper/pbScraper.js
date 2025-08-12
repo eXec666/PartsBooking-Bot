@@ -6,7 +6,7 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const ExcelJS = require('exceljs');
 const { app } = require('electron');
-
+const SUPPORTED_BRANDS = new Set(['JOHN DEERE', 'CLAAS', 'MANITOU']);
 const initDb = require('../db/init_db');
 const dbManager = require('../db/db_Manager');
 const { rankPrice } = dbManager;
@@ -26,6 +26,15 @@ const sleep = ms => new Promise(res => setTimeout(res, ms));
 
 let sharedTaskQueue = [];
 function getNextTask() { return sharedTaskQueue.shift() || null; }
+
+function resolveBrandCode(raw) {
+  const b = String(raw || '').trim().toUpperCase();
+  if (!b) return null;
+  if (b.includes('JOHN') && b.includes('DEERE')) return 'JOHN%20DEERE'; // explicit for safety
+  if (b === 'CLAAS') return 'CLAAS';
+  if (b === 'MANITOU') return 'MANITOU';
+  return null; // not supported
+}
 
 class ParallelScraper {
   constructor(instanceId) {
@@ -83,15 +92,24 @@ class ParallelScraper {
     }
   }
 
+  
+
   buildProductUrl(brandName, partNumber) {
-    const brand = encodeURIComponent(String(brandName).trim());
-    const part = encodeURIComponent(String(partNumber).trim());
-    return `https://partsbooking.ru/products/${brand}/${part}.html`;
-  }
+  const brandCode = resolveBrandCode(brandName);
+  if (!brandCode) return null; // caller will handle skipping
+  const part = encodeURIComponent(String(partNumber).trim());
+  return `https://partsbooking.ru/products/${brandCode}/${part}.html`;
+}
 
   async processTask(task) {
   const { brandName, partNumber } = task;
   try {
+    const brandCode = resolveBrandCode(brandName);
+    if (!brandCode) {
+      console.warn(`[worker ${this.instanceId}] Skipping unsupported brand "${brandName}" for part ${partNumber}`);
+      return {ok: false, error: 'Unsupported brand', partNumber, brandName };
+    }
+    
     const productUrl = this.buildProductUrl(brandName, partNumber);
     console.log(`[worker ${this.instanceId}] Navigating to: ${productUrl}`);
 
