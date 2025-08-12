@@ -1,4 +1,5 @@
-// db/db_Manager.js
+const fs = require('fs');
+const path = require('path');
 const { EventEmitter } = require('events');
 const Database = require('better-sqlite3');
 const { DB_PATH } = require('./db_config.js');
@@ -22,6 +23,41 @@ function disconnect() {
   if (db) {
     try { db.close(); } catch (_) {}
     db = null;
+  }
+}
+
+
+
+function wipeDatabase({ mode = 'delete', vacuum = true } = {}) {
+  const dbc = connect();
+  try {
+    const count = dbc.prepare(`SELECT COUNT(*) AS c FROM prices`).get().c;
+
+    if (mode === 'drop-recreate') {
+      dbc.exec('BEGIN');
+      try {
+        dbc.exec('DROP TABLE IF EXISTS prices;');
+        dbc.exec('COMMIT');
+      } catch (e) {
+        dbc.exec('ROLLBACK');
+        throw e;
+      }
+      initDb();
+      if (vacuum) dbc.exec('VACUUM');
+      return { success: true, mode, dropped: true, recreated: true, deletedRows: count };
+    }
+
+    const tx = dbc.transaction(() => {
+      dbc.prepare('DELETE FROM prices').run();
+    });
+    tx();
+
+    if (vacuum) dbc.exec('VACUUM');
+
+    return { success: true, mode, deletedRows: count };
+  } catch (error) {
+    console.error('[db_Manager] wipeDatabase failed:', error);
+    return { success: false, error: error.message };
   }
 }
 
@@ -135,10 +171,104 @@ function onDumpProgress(handler) {
   bus.on('dump-progress', handler);
 }
 
+// --- CSV EXPORT ---
+const { app } = (() => { try { return require('electron'); } catch { return {}; } })();
+const DEFAULT_CHUNK = 10000;
+
+function escapeCsvValue(val) {
+  if (val == null) return '';
+  const s = String(val);
+  if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
+
+/**
+ * Export the current prices table to CSV files in chunks.
+ * Files are written to the user's Downloads folder (Electron) or ./exports (Node).
+ * @param {{chunkSize?: number}} opts
+ */
+function generateCsvFiles({ chunkSize = DEFAULT_CHUNK } = {}) {
+  const ro = new Database(DB_PATH, { readonly: true });
+  try {
+    const total = ro.prepare(`SELECT COUNT(*) AS total FROM prices`).get().total;
+    if (!total) {
+      return {
+        success: true,
+        message: 'No data to export (prices table is empty).',
+        directory: null,
+        files: [],
+        fileCount: 0,
+        totalRows: 0
+      };
+    }
+
+    const downloadsPath = (app && app.getPath) ? app.getPath('downloads') : path.join(process.cwd(), 'exports');
+    const baseDir = path.join(downloadsPath, 'price_reports');
+    if (!fs.existsSync(baseDir)) fs.mkdirSync(baseDir, { recursive: true });
+
+    const fileCount = Math.ceil(total / chunkSize);
+    const files = [];
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+
+    const stmt = ro.prepare(`
+      SELECT 
+        part_number AS 'Артикул',
+        brand_name  AS 'Брэнд',
+        rank_pos    AS 'Позиция в Прайс-листе',
+        our_price   AS 'Цена G&G',
+        leader_code AS 'Код Лидера',
+        leader_price AS 'Цена Лидера',
+        over_code   AS 'Код Опережающего Конкурента',
+        over_price  AS 'Цена Опережающего Конкурента',
+        under_code  AS 'Код Отстающего Конкурента',
+        under_price AS 'Цена Отстающего Конкурента'
+      FROM prices
+      ORDER BY part_number, brand_name
+      LIMIT ? OFFSET ?
+    `);
+
+    for (let i = 0; i < fileCount; i++) {
+      const offset = i * chunkSize;
+      const rows = stmt.all(chunkSize, offset);
+      if (!rows.length) continue;
+
+      const fileName = `prices_${timestamp}_part${i + 1}_of${fileCount}.csv`;
+      const filePath = path.join(baseDir, fileName);
+
+      const headerKeys = Object.keys(rows[0]);
+      const header = headerKeys.join(',');
+      const csv = [header];
+      for (const r of rows) {
+        csv.push(headerKeys.map(k => escapeCsvValue(r[k])).join(','));
+      }
+
+      fs.writeFileSync(filePath, csv.join('\n'), 'utf8');
+      files.push(filePath);
+    }
+
+    return {
+      success: true,
+      message: `Exported ${total} price rows to ${fileCount} file(s).`,
+      directory: baseDir,
+      fileCount,
+      totalRows: total,
+      files,
+      mode: 'prices'
+    };
+  } catch (error) {
+    console.error('[db_Manager] CSV export failed:', error);
+    return { success: false, error: error.message };
+  } finally {
+    try { ro.close(); } catch {}
+  }
+}
+
 module.exports = {
   connect,
   disconnect,
   dumpToDb,
   rankPrice,
-  onDumpProgress
+  onDumpProgress,
+  generateCsvFiles,
+  wipeDatabase
 };
