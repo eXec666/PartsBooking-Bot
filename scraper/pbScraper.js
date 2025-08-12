@@ -330,5 +330,5 @@ const api = {
     }
   }
 };
-
+api.imagesDir = CONFIG.imagesDir;
 module.exports = api;

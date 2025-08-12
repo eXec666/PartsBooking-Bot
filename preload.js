@@ -18,7 +18,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   downloadCsv: () => ipcRenderer.invoke('download-csv'),
 
-  openImagesFolder: async () => {
+  openImages: async () => {
     const dir = await ipcRenderer.invoke('get-images-dir');
     return ipcRenderer.invoke('open-folder', dir);
   },

@@ -6,7 +6,8 @@ const path = require('path');
 const fs = require('fs');
 const dbManager = require('./db/db_Manager');
 const {wipeDatabase} = dbManager
-const pbScraper = require('./scraper/pbScraper');
+const {pbScraper, imagesDir} = require('./scraper/pbScraper');
+
 //const {data} = require('node-persist');
 
 //log forwarding
