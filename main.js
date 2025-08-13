@@ -151,6 +151,21 @@ ipcMain.handle('open-folder', async (_evt, folderPath) => {
   return { success: true };
 });
 
+// Open DB Viewer window handler
+ipcMain.on('open-db-viewer', () => {
+  const win = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js')
+    }
+  });
+
+  win.loadFile(path.join(__dirname, 'db', 'dbViewer.html'));
+});
+
 app.on('window-all-closed', () => {
   try {
     dbManager.disconnect(); // unified DB close
