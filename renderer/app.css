@@ -1,12 +1,3 @@
-/* =========================================================
-   G&G BOT — Clean, modern UI (replacement app.css)
-   - Light/Dark via [data-theme="dark"] + manual toggle
-   - Header more contrasted in light theme
-   - Image-based theme toggle (theme.png in same folder)
-   - Tabs no longer inherit white text
-   - Results/lists get padded “card” so they don’t hug left
-   ========================================================= */
-
 /* ---------- 0) Minimal reset ---------- */
 *,
 *::before,
@@ -15,30 +6,14 @@ html, body { height: 100%; }
 body { margin: 0; }
 
 /* ---------- 1) Design tokens ---------- */
+/* --- Shared, non-color tokens --- */
 :root {
-  /* Palette (light) */
-  --bg: #f7f8fa;
-  --surface: #ffffff;
-  --surface-2: #eef2f7;           /* slightly tinted for headers/plates */
-  --text: #a9bcd8;                /* gray-800 */
-  --text-muted: #6b7280;          /* gray-500 */
-  --border: #d9dee6;              /* soft border */
-
-  --primary: #2563eb;             /* blue-600 */
-  --primary-700: #1d4ed8;
-  --primary-50: #eff6ff;
-  --danger: #dc2626;
-
-  /* Header strip (light) — darker than white for logo contrast */
-  --header-bg: #333535;
-
-  /* Layout */
+  /* Layout & constants that don't change with theme */
   --radius: 12px;
   --radius-sm: 8px;
   --shadow: 0 1px 2px rgba(0,0,0,.05), 0 8px 24px rgba(0,0,0,.08);
   --shadow-subtle: 0 1px 2px rgba(0,0,0,.05);
 
-  /* Spacing scale */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -47,47 +22,51 @@ body { margin: 0; }
   --space-6: 24px;
   --space-8: 32px;
 
-  /* Header sizing */
-  --header-logo: 52px;            /* bigger logo (~2x) */
-  --header-icon: 48px;            /* bigger theme toggle (~2x) */
-  --header-pad-y: 16px;           /* more breathing room */
+  --header-logo: 52px;
+  --header-icon: 48px;
+  --header-pad-y: 16px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0b1220;
-    --surface: #0f172a;
-    --surface-2: #111827;
-    --text: #e5e7eb;
-    --text-muted: #94a3b8;
-    --border: #1f2a44;
+/* --- Light theme tokens --- */
+html[data-theme="light"] {
+  color-scheme: light;
 
-    --primary: #3b82f6;
-    --primary-700: #60a5fa;
-    --primary-50: #0b1a36;
-    --danger: #f87171;
+  --bg: #f7f8fa;
+  --surface: #ffffff;
+  --surface-2: #eef2f7;
+  --text: #0f172a;          /* (Use a dark gray for better contrast in light) */
+  --text-muted: #6b7280;
+  --border: #d9dee6;
+  --border-strong: #5c5858;
 
-    /* Dark header stays darker than body for separation */
-    --header-bg: #0e1628;
-  }
+  --primary: #2563eb;
+  --primary-700: #1d4ed8;
+  --primary-50: #eff6ff;
+  --danger: #dc2626;
+
+  --header-bg: #35344a;
 }
 
+/* --- Dark theme tokens --- */
 html[data-theme="dark"] {
+  color-scheme: dark;
+
   --bg: #0b1220;
   --surface: #0f172a;
   --surface-2: #111827;
   --text: #e5e7eb;
   --text-muted: #94a3b8;
   --border: #1f2a44;
+  --border-strong: #fff;
 
   --primary: #3b82f6;
   --primary-700: #60a5fa;
   --primary-50: #0b1a36;
   --danger: #f87171;
 
-  /* Dark header stays darker than body for separation */
   --header-bg: #0e1628;
 }
+
 
 /* ---------- 2) Base typography ---------- */
 body {
@@ -101,7 +80,7 @@ body {
 h1, h2, h3 { line-height: 1.2; margin: 0 0 var(--space-4); }
 h2 { font-size: 20px; }
 h3 { font-size: 18px; color: var(--text-muted); }
-.muted { color: var(--text-muted); }
+.muted { color: var(--text-muted); margin-top: var(--space-3)}
 .sr-only {
   position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0,0,1px,1px); white-space: nowrap; border: 0;
@@ -124,7 +103,7 @@ h3 { font-size: 18px; color: var(--text-muted); }
 
 .app-brand { display: flex; align-items: center; gap: var(--space-3); }
 .app-logo { height: var(--header-logo); width: auto; display: block; }
-.app-title { font-weight: 750; letter-spacing: .2px; font-size: 16px; }
+.app-title { font-weight: 750; letter-spacing: .2px; font-size: 16px; color: #fff}
 
 /* Theme toggle: PNG icon from same folder as app.css */
 .theme-toggle {
@@ -133,10 +112,6 @@ h3 { font-size: 18px; color: var(--text-muted); }
   height: var(--header-icon);
   padding: 0;
   margin-inline-start: 12px;         /* a bit away from the left of its area */
-  background-image: url('theme.png');
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: 60%;
   background-color: var(--surface);
   color: var(--text);
   border: 1px solid var(--border);
@@ -144,6 +119,16 @@ h3 { font-size: 18px; color: var(--text-muted); }
   box-shadow: var(--shadow-subtle);
   cursor: pointer;
 }
+/* Default light mode icon */
+.theme-toggle::after {
+  content: '🌙';
+  font-size: 20px;
+}
+/* Dark mode icon */
+html[data-theme="dark"] .theme-toggle::after {
+  content: '🌞';
+}
+
 
 
 /* ---------- 4) Layout shells ---------- */
@@ -185,8 +170,7 @@ h3 { font-size: 18px; color: var(--text-muted); }
   font-weight: 600;
 }
 .tabs > button:hover { background: var(--surface-2); }
-.tabs > button.active,
-.tabs > button[aria-selected="true"] {
+.tabs > button.active {
   background: var(--primary-50);
   color: var(--primary-700);
   outline: 1px solid rgba(37, 99, 235, .25);
@@ -224,7 +208,7 @@ input::placeholder { color: var(--text-muted); }
   height: 40px;
   padding: 0 14px;
   border-radius: 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
@@ -262,7 +246,7 @@ input::placeholder { color: var(--text-muted); }
 .progress {
   position: relative;
   width: 100%;
-  height: 10px;
+  height: 20px;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -285,7 +269,21 @@ input::placeholder { color: var(--text-muted); }
 }
 
 /* ---------- 9) DB viewer & dump ---------- */
-.db-controls { margin-bottom: var(--space-4); }
+.db-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.db-controls__danger {
+  display: flex;
+}
+
+.db-controls__danger .btn {
+  box-shadow: 0 1px 2px rgba(0,0,0,.08), 0 0 0 2px rgba(220, 38, 38, .12);
+}
 
 .db-viewer {
   margin-top: var(--space-4);
@@ -318,8 +316,27 @@ input::placeholder { color: var(--text-muted); }
 }
 
 /* ---------- 10) Logs ---------- */
+.logs-actions {
+  position: sticky;
+  top: calc(var(--header-pad-y) + 2px);
+  z-index: 20;
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  padding-bottom: var(--space-2);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+@supports (backdrop-filter: blur(4px)) {
+  .logs-actions {
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    backdrop-filter: blur(4px);
+  }
+}
+
 .logs-window {
-  margin-top: var(--space-4);
+  margin-top: var(--space-2);
   height: 360px;
   background: var(--surface-2);
   border: 1px solid var(--border);

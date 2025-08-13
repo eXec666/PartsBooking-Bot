@@ -18,6 +18,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   downloadCsv: () => ipcRenderer.invoke('download-csv'),
 
+  openImages: async () => {
+    const dir = await ipcRenderer.invoke('get-images-dir');
+    return ipcRenderer.invoke('open-folder', dir);
+  },
 
   // File system helpers
   openFolder: (dirPath) => ipcRenderer.invoke('open-folder', dirPath),

@@ -6,10 +6,11 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const ExcelJS = require('exceljs');
 const { app } = require('electron');
-
+const SUPPORTED_BRANDS = new Set(['JOHN DEERE', 'CLAAS', 'MANITOU']);
 const initDb = require('../db/init_db');
 const dbManager = require('../db/db_Manager');
 const { rankPrice } = dbManager;
+const https = require('https');
 
 puppeteer.use(StealthPlugin());
 
@@ -19,13 +20,63 @@ const CONFIG = {
   maxPartsToProcess: 0,
   maxConcurrentInstances: Math.max(1, Math.min(2, os.cpus().length)),
   requestThrottle: 1200,
-  navigation: { timeout: 45000, waitUntil: 'networkidle2' }
+  navigation: { timeout: 45000, waitUntil: 'networkidle2' },
+  imagesDir: path.resolve(process.resourcesPath || __dirname, 'images')
 };
 
 const sleep = ms => new Promise(res => setTimeout(res, ms));
 
 let sharedTaskQueue = [];
 function getNextTask() { return sharedTaskQueue.shift() || null; }
+
+function resolveBrandCode(raw) {
+  const b = String(raw || '').trim().toUpperCase();
+  if (!b) return null;
+  if (b.includes('JOHN') && b.includes('DEERE')) return 'JOHN%20DEERE'; // explicit for safety
+  if (b === 'CLAAS') return 'CLAAS';
+  if (b === 'MANITOU') return 'MANITOU';
+  return null; // not supported
+}
+
+function ensureDir(p) {
+  if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
+}
+
+function downloadImage(imageUrl, filePath, referer) {
+  return new Promise((resolve, reject) => {
+    ensureDir(path.dirname(filePath));
+    const file = fs.createWriteStream(filePath);
+
+    const doGet = (urlToGet) => {
+      const req = https.get(urlToGet, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0',
+          'Referer': referer || 'https://partsbooking.ru/'
+        }
+      }, (res) => {
+        // handle redirects
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          const nextUrl = new URL(res.headers.location, urlToGet).href;
+          res.resume(); // discard body
+          return doGet(nextUrl);
+        }
+        if (res.statusCode !== 200) {
+          file.close(() => fs.unlink(filePath, () => {}));
+          return reject(new Error(`HTTP ${res.statusCode} for ${urlToGet}`));
+        }
+        res.pipe(file);
+        file.on('finish', () => file.close(() => resolve(filePath)));
+      });
+
+      req.on('error', (err) => {
+        file.close(() => fs.unlink(filePath, () => {}));
+        reject(err);
+      });
+    };
+
+    doGet(imageUrl);
+  });
+}
 
 class ParallelScraper {
   constructor(instanceId) {
@@ -83,15 +134,24 @@ class ParallelScraper {
     }
   }
 
+  
+
   buildProductUrl(brandName, partNumber) {
-    const brand = encodeURIComponent(String(brandName).trim());
-    const part = encodeURIComponent(String(partNumber).trim());
-    return `https://partsbooking.ru/products/${brand}/${part}.html`;
-  }
+  const brandCode = resolveBrandCode(brandName);
+  if (!brandCode) return null; // caller will handle skipping
+  const part = encodeURIComponent(String(partNumber).trim());
+  return `https://partsbooking.ru/products/${brandCode}/${part}.html`;
+}
 
   async processTask(task) {
   const { brandName, partNumber } = task;
   try {
+    const brandCode = resolveBrandCode(brandName);
+    if (!brandCode) {
+      console.warn(`[worker ${this.instanceId}] Skipping unsupported brand "${brandName}" for part ${partNumber}`);
+      return {ok: false, error: 'Unsupported brand', partNumber, brandName };
+    }
+
     const productUrl = this.buildProductUrl(brandName, partNumber);
     console.log(`[worker ${this.instanceId}] Navigating to: ${productUrl}`);
 
@@ -118,6 +178,24 @@ class ParallelScraper {
     if (!priceItems) {
       console.warn(`[worker ${this.instanceId}] No price_items found for ${partNumber}`);
       return { ok: false, error: 'No price_items', partNumber };
+    }
+
+    const imgRel = (priceItems || []).find(x => x?.sys_info?.goods_img_url)?.sys_info?.goods_img_url;
+    if (imgRel) {
+      try {
+        const imgUrl = new URL(imgRel, 'https://partsbooking.ru').href;
+        const brandSafe = String(brandName || '').trim().replace(/[^\w\-]+/g, '_');
+        const partSafe  = String(partNumber || '').trim().replace(/[^\w\-]+/g, '_');
+        const ext       = path.extname(imgUrl) || '.jpg';
+        const outDir    = path.join(CONFIG.imagesDir, brandSafe);
+        const outFile   = path.join(outDir, `${partSafe}${ext}`);
+        await downloadImage(imgUrl, outFile, productUrl);
+        console.log(`[worker ${this.instanceId}] Image saved: ${outFile}`);
+      } catch (e) {
+        console.warn(`[worker ${this.instanceId}] Image download failed for ${partNumber}: ${e.message}`);
+      }
+    } else {
+      console.log(`[worker ${this.instanceId}] No image URL for ${partNumber}`);
     }
 
     const slag = priceItems
@@ -172,8 +250,7 @@ class ParallelScraper {
 }
 
 let isScraping = false;
-
-module.exports = {
+const api = {
   runWithProgress: async function (progressCallback = () => {}, onForceRefresh = () => {}, inputFilePath = null) {
     if (isScraping) return { message: 'Scraping is already in progress.' };
     isScraping = true;
@@ -251,5 +328,9 @@ module.exports = {
     } finally {
       isScraping = false;
     }
-  }
+  },
+  imagesDir : CONFIG.imagesDir
 };
+
+api.pbScraper = api;
+module.exports = api;

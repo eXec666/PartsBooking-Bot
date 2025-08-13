@@ -6,7 +6,8 @@ const path = require('path');
 const fs = require('fs');
 const dbManager = require('./db/db_Manager');
 const {wipeDatabase} = dbManager
-const pbScraper = require('./scraper/pbScraper');
+const {pbScraper, imagesDir} = require('./scraper/pbScraper');
+
 //const {data} = require('node-persist');
 
 //log forwarding
@@ -55,10 +56,10 @@ ipcMain.handle('scrape-prices', async (event, inputFilePath) => {
       win = windows.find(w => w.isVisible()) || windows[0];
     }
 
-    console.log('🔌 Starting vehicle scraping...');
+    console.log('🔌 Starting scraping...');
     const result = await pbScraper.runWithProgress(
       (percent, message) => {
-        console.log(`📦 Vehicle Progress: ${percent}% - ${message}`);
+        console.log(`📦 Progress: ${percent}% - ${message}`);
         if (win && !win.isDestroyed()) {
           win.webContents.send('progress-update', percent, message);
         }
@@ -139,6 +140,8 @@ ipcMain.handle('download-csv', async () => {
   return result; 
 });
 
+ipcMain.handle('get-images-dir', async () => imagesDir);
+
 
 ipcMain.handle('open-folder', async (_evt, folderPath) => {
   if (!folderPath) return { success: false, error: 'No folder path provided' };
@@ -146,6 +149,21 @@ ipcMain.handle('open-folder', async (_evt, folderPath) => {
   // openPath returns '' on success, or an error string on failure
   if (outcome) return { success: false, error: outcome };
   return { success: true };
+});
+
+// Open DB Viewer window handler
+ipcMain.on('open-db-viewer', () => {
+  const win = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js')
+    }
+  });
+
+  win.loadFile(path.join(__dirname, 'db', 'dbViewer.html'));
 });
 
 app.on('window-all-closed', () => {

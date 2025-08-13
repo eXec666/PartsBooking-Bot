@@ -28,8 +28,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const partInput         = document.getElementById('partNumberInput');
   const queryPartBtn      = document.getElementById('queryPartBtn');
   const selectFileBtn     = document.getElementById('selectFileBtn');
-  const startPricesBtn = document.getElementById('startPricesBtn'); //rename to startVehicleBtn
-  const startNodesBtn     = document.getElementById('startNodesBtn');
+  const startPricesBtn = document.getElementById('startPricesBtn');
   const filePathDisplay   = document.getElementById('filePathDisplay');
   const progressBar       = document.querySelector('#progressBar > div');
 
@@ -37,6 +36,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const wipeDbBtn     = document.getElementById('wipeDbBtn');
   const openDbBtn     = document.getElementById('openDbBtn');
   const downloadCsvBtn = document.getElementById('downloadCsvBtn');
+  const openImagesBtn = document.getElementById('openImagesBtn')
 
   // Logs
   const logsWindow   = document.getElementById('logsWindow');
@@ -107,137 +107,6 @@ document.addEventListener('DOMContentLoaded', () => {
     return modal;
   }
 
-  // ======================
-  // Search Functionality
-  // ======================
-  if (partInput) {
-    partInput.addEventListener('focus', function () {
-      this.select();
-      if (searchResults) searchResults.style.display = 'none';
-    });
-
-    partInput.addEventListener('input', function (e) {
-      clearTimeout(debounceTimer);
-      const query = e.target.value.trim();
-
-      if (!searchResults) return;
-
-      if (query.length < 3) {
-        searchResults.style.display = 'none';
-        return;
-      }
-
-      debounceTimer = setTimeout(async () => {
-        try {
-          const result = await window.electronAPI.queryPartSuggestions(query);
-          displayResults(result.suggestions);
-        } catch (error) {
-          console.error('Search error:', error);
-          searchResults.style.display = 'none';
-        }
-      }, 300);
-    });
-
-    partInput.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') {
-        if (searchResults) searchResults.style.display = 'none';
-        performSearch();
-      }
-    });
-  }
-
-  function displayResults(suggestions) {
-    if (!searchResults) return;
-    searchResults.innerHTML = '';
-    if (suggestions.length > 0) {
-      suggestions.forEach(suggestion => {
-        const div = document.createElement('div');
-        div.className = 'search-item';
-        div.textContent = suggestion;
-        div.addEventListener('click', () => {
-          partInput.value = suggestion;
-          searchResults.style.display = 'none';
-          performSearch();
-        });
-        searchResults.appendChild(div);
-      });
-      searchResults.style.display = 'block';
-    } else {
-      searchResults.style.display = 'none';
-    }
-  }
-
-  async function performSearch() {
-    const partNumber = partInput.value.trim();
-    if (!partNumber) return;
-
-    try {
-      const result = await window.electronAPI.queryPart(partNumber);
-      if (result.error) throw new Error(result.error);
-
-      showResultsModal(partNumber, result);
-    } catch (error) {
-      console.error('Search failed:', error);
-      showNotification(`Error: ${error.message}`, true);
-    }
-  }
-
-  function showResultsModal(partNumber, result) {
-    createModal(
-      `Compatibility Results for ${partNumber}`,
-      `
-        <p>Found ${result.totalUnique} compatible vehicles:</p>
-        <ul class="vehicle-list">
-          ${result.rows.map(r => `
-            <li class="vehicle-item" data-vehicle-id="${r.vehicle_id}"
-                data-part-number="${partNumber}">
-              ${r.vehicle_name} (${r.cnt} matches)
-            </li>
-          `).join('')}
-        </ul>
-      `,
-      () => partInput.focus()
-    );
-    // Add click handlers for vehicle items
-    document.querySelectorAll('.vehicle-item').forEach(item => {
-      item.addEventListener('click', e => {
-        showNodeDetails(
-          e.currentTarget.dataset.partNumber,
-          e.currentTarget.dataset.vehicleId
-        );
-      });
-    });
-  }
-
-  async function showNodeDetails(partNumber, vehicleId) {
-    const loadingModal = createModal(
-      'Loading Node Details',
-      '<div class="loader"></div>'
-    );
-
-    try {
-      const result = await window.electronAPI.getNodeDetails(partNumber, vehicleId);
-      document.body.removeChild(loadingModal);
-
-      if (result.error) throw new Error(result.error);
-        createModal(
-        'Node Details',
-        `
-          <p><strong>Part:</strong> ${partNumber}</p>
-          <p><strong>Vehicle:</strong> ${result.vehicleName}</p>
-          <div class="node-list">
-            ${result.nodes.length > 0
-              ? result.nodes.map(node => `<div class="node-item">${node}</div>`).join('')
-              : '<p>No nodes found</p>'}
-          </div>
-        `
-      );
-    } catch (err) {
-      document.body.removeChild(loading);
-      console.error(err);
-      showNotification(`Error: ${err.message}`, true);
-    }
-  }
 
   // --- File / Scrape Buttons (Главное меню) ---
   selectFileBtn.addEventListener('click', async () => {
@@ -278,21 +147,6 @@ document.addEventListener('DOMContentLoaded', () => {
     queryPartBtn.addEventListener('click', performSearch);
   }
 
-  startNodesBtn.addEventListener('click', async () => {
-    startNodesBtn.disabled = true;
-    startNodesBtn.textContent = 'Запуск узлов...';
-    try {
-      const res = await window.electronAPI.scrapeNodes();
-      if (res.error) throw new Error(res.error);
-      showNotification(res.message || 'Completed!');
-    } catch (err) {
-      showNotification(`Error: ${err.message}`, true);
-    } finally {
-      startNodesBtn.disabled = false;
-      startNodesBtn.textContent = 'Запустить узлы';
-    }
-  });
-  
     // Listen for DB dump progress and update the second bar
   if (window.electronAPI?.onDbDumpProgress && dbSection && dbBar && dbLabel && dbMeta) {
     const unsubscribeDb = window.electronAPI.onDbDumpProgress(({ table, done, total, percent }) => {
@@ -336,20 +190,20 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   
   wipeDbBtn.addEventListener('click', async () => {
-  if (confirm('Are you sure you want to wipe the database?')) {
-    try {
-      await window.electronAPI.resetDatabase();
-      showNotification('Database wiped');
+    if (confirm('Are you sure you want to wipe the database?')) {
+      try {
+        await window.electronAPI.resetDatabase();
+        showNotification('Database wiped');
 
-      // Refresh DB tab only if the DB tab is active and dbViewerRenderer is available
-      if (typeof window.dbViewerRenderer?.init === 'function') {
-        window.dbViewerRenderer.init();
+        // Refresh DB tab only if the DB tab is active and dbViewerRenderer is available
+        if (typeof window.dbViewerRenderer?.init === 'function') {
+          window.dbViewerRenderer.init();
+        }
+      } catch (err) {
+        showNotification(`Error: ${err.message}`, true);
       }
-    } catch (err) {
-      showNotification(`Error: ${err.message}`, true);
     }
-  }
-});
+  });
   
   if (openDbBtn) {
     openDbBtn.addEventListener('click', () => {
@@ -373,6 +227,26 @@ document.addEventListener('DOMContentLoaded', () => {
       } finally {
         downloadCsvBtn.disabled = false;
         downloadCsvBtn.textContent = 'Download CSV';
+      }
+    });
+  }
+
+  if (openImagesBtn) {
+    openImagesBtn.addEventListener('click', async () => {
+      openImagesBtn.disabled = true;
+      openImagesBtn.textContent = 'Открываем папку с фото';
+
+      try {
+        const result = await window.electronAPI.openImages();
+        if (result.error) throw new Error(result.error);
+
+        showNotification(result.message || `Photos saved to: ${result.directory}`);
+        window.electronAPI.openFolder(result.directory);
+      } catch (error) {
+        showNotification(`Error: ${error.message}`, true);
+      } finally {
+        openImagesBtn.disabled = false;
+        openImagesBtn.textContent = 'Открыть фото';
       }
     });
   }

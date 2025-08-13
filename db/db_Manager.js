@@ -1,4 +1,5 @@
-// db/db_Manager.js
+const fs = require('fs');
+const path = require('path');
 const { EventEmitter } = require('events');
 const Database = require('better-sqlite3');
 const { DB_PATH } = require('./db_config.js');
@@ -24,6 +25,95 @@ function disconnect() {
     db = null;
   }
 }
+
+function checkpoint(truncate = true) {
+  try {
+    const mode = truncate ? 'TRUNCATE' : 'PASSIVE';
+    const res = connect().pragma(`wal_checkpoint(${mode})`);
+    console.log('[db_Manager] wal_checkpoint(%s) =>', mode, res);
+  } catch (e) {
+    console.warn('[db_Manager] wal_checkpoint failed:', e.message);
+  }
+}
+
+
+function wipeDatabase({ mode = 'delete', vacuum = true } = {}) {
+  console.log(`[db_Manager] wipeDatabase: initiated with mode=${mode}, vacuum=${vacuum}`);
+  console.log(`[db_Manager] wipeDatabase: connecting to database at ${DB_PATH}`);
+
+  const dbc = connect();
+  const startTs = new Date().toISOString();
+  console.log(`[db_Manager] wipeDatabase: start @ ${startTs}`);
+
+  try {
+    const count = dbc.prepare(`SELECT COUNT(*) AS c FROM prices`).get().c;
+    console.log(`[db_Manager] wipeDatabase: current rows in prices=${count}`);
+
+    if (mode === 'drop-recreate') {
+      console.log('[db_Manager] wipeDatabase: dropping table prices...');
+      dbc.exec('BEGIN');
+      try {
+        dbc.exec('DROP TABLE IF EXISTS prices;');
+        dbc.exec('COMMIT');
+        console.log('[db_Manager] wipeDatabase: drop committed. Recreating schema via initDb()...');
+      } catch (e) {
+        dbc.exec('ROLLBACK');
+        console.error('[db_Manager] wipeDatabase: drop failed, rolled back.', e);
+        throw e;
+      }
+      initDb();
+      const exists = dbc.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='prices'").get();
+      console.log(`[db_Manager] wipeDatabase: schema recreated. prices table exists=${!!exists}`);
+      try {
+        const res = dbc.pragma("wal_checkpoint(TRUNCATE)");
+        console.log('[db_Manager] wipeDatabase: wal_checkpoint(TRUNCATE) =>', res);
+      } catch (e) {
+        console.warn('[db_Manager] wipeDatabase: wal_checkpoint failed:', e.message);
+      }
+      if (vacuum) {
+        console.log('[db_Manager] wipeDatabase: running VACUUM...');
+        dbc.exec('VACUUM');
+        console.log('[db_Manager] wipeDatabase: VACUUM complete.');
+      }
+      const endTs = new Date().toISOString();
+      console.log(`[db_Manager] wipeDatabase: finished @ ${endTs}`);
+      return { success: true, mode, dropped: true, recreated: true, deletedRows: count };
+    }
+
+    console.log('[db_Manager] wipeDatabase: deleting all rows from prices...');
+    const tx = dbc.transaction(() => {
+      dbc.prepare('DELETE FROM prices').run();
+    });
+    tx();
+
+    const after = dbc.prepare(`SELECT COUNT(*) AS c FROM prices`).get().c;
+    console.log(`[db_Manager] wipeDatabase: delete complete. rows after=${after}`);
+
+    try {
+      const res = dbc.pragma("wal_checkpoint(TRUNCATE)");
+      console.log('[db_Manager] wipeDatabase: wal_checkpoint(TRUNCATE) =>', res);
+    } catch (e) {
+      console.warn('[db_Manager] wipeDatabase: wal_checkpoint failed:', e.message);
+    }
+
+    if (vacuum) {
+      console.log('[db_Manager] wipeDatabase: running VACUUM...');
+      dbc.exec('VACUUM');
+      console.log('[db_Manager] wipeDatabase: VACUUM complete.');
+    }
+
+    const endTs = new Date().toISOString();
+    console.log(`[db_Manager] wipeDatabase: finished @ ${endTs}`);
+    console.log('[db_Manager] wipeDatabase: operation complete, verify with viewer after reconnecting to DB.');
+    return { success: true, mode, deletedRows: count, rowsAfter: after };
+  } catch (error) {
+    console.error('[db_Manager] wipeDatabase failed:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+
+
 
 /**
  * Rank a list of [siteCode, price] pairs and produce a summary row.
@@ -126,6 +216,7 @@ function dumpToDb(tableName, rows) {
   });
 
   tx(rows);
+  checkpoint(false);
   bus.emit('dump-progress', { table: 'prices', count: rows.length });
 
   return { inserted: rows.length };
@@ -135,10 +226,104 @@ function onDumpProgress(handler) {
   bus.on('dump-progress', handler);
 }
 
+// --- CSV EXPORT ---
+const { app } = (() => { try { return require('electron'); } catch { return {}; } })();
+const DEFAULT_CHUNK = 10000;
+
+function escapeCsvValue(val) {
+  if (val == null) return '';
+  const s = String(val);
+  if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
+
+/**
+ * Export the current prices table to CSV files in chunks.
+ * Files are written to the user's Downloads folder (Electron) or ./exports (Node).
+ * @param {{chunkSize?: number}} opts
+ */
+function generateCsvFiles({ chunkSize = DEFAULT_CHUNK } = {}) {
+  const ro = new Database(DB_PATH, { readonly: true });
+  try {
+    const total = ro.prepare(`SELECT COUNT(*) AS total FROM prices`).get().total;
+    if (!total) {
+      return {
+        success: true,
+        message: 'No data to export (prices table is empty).',
+        directory: null,
+        files: [],
+        fileCount: 0,
+        totalRows: 0
+      };
+    }
+
+    const downloadsPath = (app && app.getPath) ? app.getPath('downloads') : path.join(process.cwd(), 'exports');
+    const baseDir = path.join(downloadsPath, 'price_reports');
+    if (!fs.existsSync(baseDir)) fs.mkdirSync(baseDir, { recursive: true });
+
+    const fileCount = Math.ceil(total / chunkSize);
+    const files = [];
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+
+    const stmt = ro.prepare(`
+      SELECT 
+        part_number AS 'Артикул',
+        brand_name  AS 'Брэнд',
+        rank_pos    AS 'Позиция в Прайс-листе',
+        our_price   AS 'Цена G&G',
+        leader_code AS 'Код Лидера',
+        leader_price AS 'Цена Лидера',
+        over_code   AS 'Код Опережающего Конкурента',
+        over_price  AS 'Цена Опережающего Конкурента',
+        under_code  AS 'Код Отстающего Конкурента',
+        under_price AS 'Цена Отстающего Конкурента'
+      FROM prices
+      ORDER BY part_number, brand_name
+      LIMIT ? OFFSET ?
+    `);
+
+    for (let i = 0; i < fileCount; i++) {
+      const offset = i * chunkSize;
+      const rows = stmt.all(chunkSize, offset);
+      if (!rows.length) continue;
+
+      const fileName = `prices_${timestamp}_part${i + 1}_of${fileCount}.csv`;
+      const filePath = path.join(baseDir, fileName);
+
+      const headerKeys = Object.keys(rows[0]);
+      const header = headerKeys.join(',');
+      const csv = [header];
+      for (const r of rows) {
+        csv.push(headerKeys.map(k => escapeCsvValue(r[k])).join(','));
+      }
+
+      fs.writeFileSync(filePath, csv.join('\n'), 'utf8');
+      files.push(filePath);
+    }
+
+    return {
+      success: true,
+      message: `Exported ${total} price rows to ${fileCount} file(s).`,
+      directory: baseDir,
+      fileCount,
+      totalRows: total,
+      files,
+      mode: 'prices'
+    };
+  } catch (error) {
+    console.error('[db_Manager] CSV export failed:', error);
+    return { success: false, error: error.message };
+  } finally {
+    try { ro.close(); } catch {}
+  }
+}
+
 module.exports = {
   connect,
   disconnect,
   dumpToDb,
   rankPrice,
-  onDumpProgress
+  onDumpProgress,
+  generateCsvFiles,
+  wipeDatabase
 };

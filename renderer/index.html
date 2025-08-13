@@ -3,8 +3,25 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>G&G БОТ</title>
+  <title>PartsBooking Бот</title>
   <!-- External styles (to be created next) -->
+   <script>
+    (() => {
+      try {
+        const mq = window.matchMedia('(prefers-color-scheme: dark)');
+        const stored = localStorage.getItem('theme'); // 'light' | 'dark' | null
+        const theme = stored || (mq.matches ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', theme);
+
+        // Follow system changes only when user hasn't chosen manually
+        if (!stored) {
+          mq.addEventListener('change', e => {
+            document.documentElement.setAttribute('data-theme', e.matches ? 'dark' : 'light');
+          });
+        }
+      } catch {}
+    })();
+  </script>
   <link rel="stylesheet" href="app.css" />
 </head>
 <body>
@@ -12,39 +29,33 @@
   <header class="app-header">
     <div class="app-brand">
       <img src="gng_logo.png" alt="G&G" class="app-logo" />
-      <span class="app-title">G&amp;G БОТ</span>
+      <span class="app-title">PartsBooking Бот</span>
     </div>
+    <button id="themeToggle" class="theme-toggle" type="button" aria-pressed="false" aria-label="Переключить тему"></button>
   </header>
 
   <main class="container">
     <!-- Tabs -->
     <nav id="topTabs" class="tabs" role="tablist" aria-label="Основные разделы">
-      <button data-tab="main" id="tab-main" class="active" role="tab" aria-selected="true" aria-controls="main">
+      <button data-tab="main" id="tab-main" class="active" role="tab" aria-controls="main">
         Главное меню
       </button>
-      <button data-tab="db" id="tab-db" role="tab" aria-selected="false" aria-controls="db">
+      <button data-tab="db" id="tab-db" role="tab" aria-controls="db">
         База данных
       </button>
-      <button data-tab="logs" id="tab-logs" role="tab" aria-selected="false" aria-controls="logs">
+      <button data-tab="logs" id="tab-logs" role="tab" aria-controls="logs">
         Логи
       </button>
     </nav>
 
     <!-- Главное меню -->
     <section id="main" class="tab-content active" role="tabpanel" aria-labelledby="tab-main">
-      <h2>Главное меню</h2>
 
       <div class="card">
-        <div class="input-group">
-          <label for="partNumberInput" class="sr-only">Артикул</label>
-          <input type="text" id="partNumberInput" placeholder="Введите артикул" />
-          <button id="queryPartBtn" class="btn btn--primary" type="button">Проверить</button>
-        </div>
 
         <div class="btn-group">
           <button id="selectFileBtn" class="btn" type="button">Выбрать Excel файл</button>
-          <button id="startPricesBtn" class="btn btn--primary" type="button" disabled>Запустить технику</button>
-          <button id="startNodesBtn" class="btn btn--secondary" type="button">Запустить узлы</button>
+          <button id="startPricesBtn" class="btn btn--primary" type="button" disabled>Запустить анализ цен</button>
         </div>
 
         <div id="filePathDisplay" class="muted">Файл не выбран</div>
@@ -58,21 +69,24 @@
 
     <!-- База данных -->
     <section id="db" class="tab-content" role="tabpanel" aria-labelledby="tab-db">
-      <h2>База данных</h2>
 
       <div class="card">
-        <div class="btn-group db-controls">
-          <button id="wipeDbBtn" class="btn btn--danger" type="button">Сбросить БД</button>
-          <button id="openDbBtn" class="btn" type="button">Открыть БД</button>
-          <button id="downloadCsvBtn" class="btn" type="button">CSV</button>
+        <div class="db-controls">
+          <div class="btn-group">
+            <button id="openDbBtn" class="btn" type="button">Открыть БД</button>
+            <button id="downloadCsvBtn" class="btn" type="button">CSV</button>
+            <button id="openImagesBtn" class="btn" type="button">Открыть фото</button>
+          </div>
+          <div class="db-controls__danger">
+            <button id="wipeDbBtn" class="btn btn--danger" type="button" aria-describedby="wipeDbHint">Сбросить БД</button>
+          </div>
+          <span id="wipeDbHint" class="sr-only">Опасное действие: удаляет все данные</span>
         </div>
 
         <div id="dbViewer" class="db-viewer"></div>
 
         <section id="db-dump-section" class="db-dump">
           <h3>Импорт из Excel</h3>
-
-          <!-- Keep original IDs; CSS will style these -->
           <div id="db-progress-track" class="progress">
             <div id="db-progress-bar"></div>
           </div>
@@ -87,20 +101,52 @@
 
     <!-- Логи -->
     <section id="logs" class="tab-content" role="tabpanel" aria-labelledby="tab-logs">
-      <h2>Логи</h2>
 
       <div class="card">
-        <div id="logsWindow" class="logs-window" role="log" aria-live="polite"></div>
-
-        <div class="btn-row">
-          <button id="scrollDownBtn" class="btn" type="button">Вниз</button>
+        <div class="btn-row logs-actions">
+          <button id="scrollDownBtn" class="btn" type="button" aria-controls="logsWindow">Вниз</button>
         </div>
-      </div>
+
+      <div id="logsWindow" class="logs-window" role="log" aria-live="polite"></div>
+    </div>
     </section>
   </main>
 
   <!-- Your existing scripts -->
   <script src="dbViewerRenderer.js"></script>
   <script src="renderer.js"></script>
+  <script>
+    (function() {
+      const themeToggleBtn = document.getElementById('themeToggle');
+      const root = document.documentElement;
+      const storedTheme = localStorage.getItem('theme');
+
+      function setTheme(theme) {
+        root.setAttribute('data-theme', theme);
+        themeToggleBtn.setAttribute('aria-pressed', theme === 'dark');
+      }
+
+      function getSystemTheme() {
+        return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }
+
+      const initialTheme = storedTheme || getSystemTheme();
+      setTheme(initialTheme);
+
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
+        if (!localStorage.getItem('theme')) {
+          setTheme(e.matches ? 'dark' : 'light');
+        }
+      });
+
+      themeToggleBtn.addEventListener('click', () => {
+        const currentTheme = root.getAttribute('data-theme');
+        const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+        setTheme(newTheme);
+        localStorage.setItem('theme', newTheme);
+      });
+    })();
+    </script>
+
 </body>
 </html>
