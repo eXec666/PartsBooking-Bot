@@ -18,13 +18,18 @@ const CONFIG = {
   inputFile: path.join(process.resourcesPath || __dirname, 'prices_input.xlsx'),
   ourSiteCode: 1269,
   maxPartsToProcess: 0,
-  maxConcurrentInstances: Math.max(1, Math.min(2, os.cpus().length)),
-  requestThrottle: 1200,
-  navigation: { timeout: 45000, waitUntil: 'networkidle2' },
+  maxConcurrentInstances: 1, //Math.max(1, Math.floor(os.cpus().length * 0.25)),
+  requestThrottleMs: { min: 1500, max: 3000 },
+  navigation: { 
+    timeout: 60000,
+    waitUntil: 'domcontentloaded' 
+  },
   imagesDir: path.resolve(process.resourcesPath || __dirname, 'images')
 };
 
 const sleep = ms => new Promise(res => setTimeout(res, ms));
+const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+const sleepRandom = ({min, max}) => sleep(randInt(min, max));
 
 let sharedTaskQueue = [];
 function getNextTask() { return sharedTaskQueue.shift() || null; }
@@ -46,6 +51,7 @@ function downloadImage(imageUrl, filePath, referer) {
   return new Promise((resolve, reject) => {
     ensureDir(path.dirname(filePath));
     const file = fs.createWriteStream(filePath);
+    let received = 0;
 
     const doGet = (urlToGet) => {
       const req = https.get(urlToGet, {
@@ -64,8 +70,9 @@ function downloadImage(imageUrl, filePath, referer) {
           file.close(() => fs.unlink(filePath, () => {}));
           return reject(new Error(`HTTP ${res.statusCode} for ${urlToGet}`));
         }
+        res.on('data', (chunk) => {received += chunk.length;});
         res.pipe(file);
-        file.on('finish', () => file.close(() => resolve(filePath)));
+        file.on('finish', () => file.close(() => resolve({filePath, bytes: received})));
       });
 
       req.on('error', (err) => {
@@ -73,10 +80,36 @@ function downloadImage(imageUrl, filePath, referer) {
         reject(err);
       });
     };
-
     doGet(imageUrl);
   });
 }
+
+async function navigateWithRetries(page, url, navOpts, attempts = 3) {
+  let lastErr = null;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const resp = await page.goto(url, navOpts);
+      const status = resp ? resp.status() : 0;
+      // Retry on 429 or 5xx, or when no response object is returned
+      if (!resp || status === 429 || status >= 500) {
+        throw new Error(`Bad nav status: ${status || 'no-response'}`);
+      }
+      return resp;
+    } catch (e) {
+      lastErr = e;
+      const backoff = randInt(800 * i, 1200 * i); // jittered backoff
+      console.warn(`[nav] attempt ${i} failed: ${e.message}. Backoff ${backoff}ms`);
+      await sleep(backoff);
+      // light fingerprint shuffle per attempt
+      try {
+        await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8' });
+      } catch {}
+    }
+  }
+  throw lastErr || new Error('navigateWithRetries failed');
+}
+
+
 
 class ParallelScraper {
   constructor(instanceId) {
@@ -114,7 +147,7 @@ class ParallelScraper {
       const workerDataDir = path.join(app.getPath('userData'), `puppeteer_worker_${this.instanceId}`);
 
       this.browser = await puppeteer.launch({
-        headless: true,
+        headless: false,
         executablePath: execPath,
         args: launchArgs,
         ignoreHTTPSErrors: true,
@@ -127,7 +160,18 @@ class ParallelScraper {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36'
       );
       await this.page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8' });
+      await this.page.setRequestInterception(true);
+      this.page.on('request', (req) => {
+        const type = req.resourceType();
+        const url  = req.url();
 
+        // block heavy/irrelevant
+        if (type === 'image' || type === 'stylesheet' || type === 'font' || type === 'media') return req.abort();
+        if (type === 'script' && /analytics|gtag|google-analytics|yandex|metrika|hotjar|tracker/i.test(url)) return req.abort();
+
+        // allow core (HTML, XHR/fetch, document JS)
+        return req.continue();
+      });
     } catch (e) {
       console.error(`[worker ${this.instanceId}] puppeteer launch failed: ${e.message}`);
       throw e;
@@ -156,29 +200,71 @@ class ParallelScraper {
     console.log(`[worker ${this.instanceId}] Navigating to: ${productUrl}`);
 
     let priceItems = null;
+    let bytesIn = 0;
 
+    const isType1 = (item) => {
+        // art_type_id can arrive as number or string; normalize
+        const v = item?.art_type_id;
+        if (v == null) return false;
+        const n = typeof v === 'string' ? Number(v.trim()) : Number(v);
+        return n === 1;
+      };
+    
+    const allowBySearchComment = (x) => {
+    const s = x?.sys_info?.search_comment;
+    if (s == null) return true;                 // missing comment ⇒ allow
+    return !String(s).toLowerCase().includes('альметьевск');
+  };
+
+    
     this.page.on('response', async (response) => {
-      const url = response.url();
-      if (url.includes('/price_search/search')) {
+    const url = response.url();
+
+  // count incoming bytes when server provides Content-Length
+  try {
+    const headers = response.headers();
+    const len = parseInt(headers['content-length'] || '0', 10);
+    if (!Number.isNaN(len) && len > 0) bytesIn += len;
+  } catch (_) { /* ignore header parsing errors */ }
+
+  if (url.includes('/price_search/search')) {
+    try {
+      const json = await response.json();
+      if (json && json.price_items) {
+        priceItems = json.price_items;
+        // backfill size if Content-Length was missing
         try {
-          const json = await response.json();
-          if (json && json.price_items) {
-            priceItems = json.price_items;
-            console.log(`[worker ${this.instanceId}] Captured ${priceItems.length} price items for ${partNumber}`);
-          }
-        } catch (err) {
-          console.error(`[worker ${this.instanceId}] Failed to parse price_search JSON: ${err.message}`);
-        }
+          const approx = Buffer.byteLength(JSON.stringify(json), 'utf8');
+          if (approx > 0) bytesIn += approx;
+        } catch (_) { /* ignore size calc errors */ }
+        console.log(`[worker ${this.instanceId}] Captured ${priceItems.length} price items for ${partNumber}`);
       }
-    });
-
-    await this.page.goto(productUrl, CONFIG.navigation);
-    await sleep(2500);
-
-    if (!priceItems) {
-      console.warn(`[worker ${this.instanceId}] No price_items found for ${partNumber}`);
-      return { ok: false, error: 'No price_items', partNumber };
+    } catch (err) {
+      console.error(`[worker ${this.instanceId}] Failed to parse price_search JSON: ${err.message}`);
     }
+  }
+});
+
+    await navigateWithRetries(this.page, productUrl, CONFIG.navigation, 3);
+    const apiResp = await this.page
+  .waitForResponse(r => r.url().includes('/price_search/search'), { timeout: 10000 })
+  .catch(() => null);
+
+// safety: if the response listener hasn’t set priceItems yet, parse here too
+if (apiResp && !priceItems) {
+  try {
+    const json = await apiResp.json();
+    if (json && json.price_items) priceItems = json.price_items;
+  } catch {}
+}
+
+ if (!priceItems) {
+   console.warn(
+     `[worker ${this.instanceId}] No price_items found for ${partNumber} after waiting ${maxWaitMs}ms`);
+     console.log(`[worker ${this.instanceId}] [${partNumber}] total bandwidth used: ${bytesIn} bytes`);
+     return { ok: false, error: 'No price_items', partNumber };
+   }
+    
 
     const imgRel = (priceItems || []).find(x => x?.sys_info?.goods_img_url)?.sys_info?.goods_img_url;
     if (imgRel) {
@@ -199,6 +285,8 @@ class ParallelScraper {
     }
 
     const slag = priceItems
+      .filter(isType1)
+      .filter(allowBySearchComment)
       .map(x => {
         const pid = x?.price_id ?? x?.id ?? null;
         const c = x?.cost ?? x?.price ?? null;
@@ -216,14 +304,14 @@ class ParallelScraper {
     this.results.push(ranked);
     this.buffer.push(ranked);
 
-    if (this.buffer.length >= 100) {
+    if (this.buffer.length >= 10) {
       try {
         dbManager.dumpToDb('prices', this.buffer);
       } finally {
         this.buffer = [];
       }
     }
-
+    console.log(`[worker ${this.instanceId}] [${partNumber}] total bandwidth used: ${bytesIn} bytes`);
     return { ok: true, count: slag.length, partNumber };
   } catch (err) {
     console.error(`[worker ${this.instanceId}] task ${partNumber} failed: ${err.message}`);
@@ -239,7 +327,7 @@ class ParallelScraper {
       if (!task) break;
       await this.processTask(task);
       progressCallback();
-      await sleep(CONFIG.requestThrottle + Math.random() * 400);
+      await sleepRandom(CONFIG.requestThrottleMs);
     }
   }
 
