@@ -328,7 +328,9 @@ const api = {
     } finally {
       isScraping = false;
     }
-  }
+  },
+  imagesDir : CONFIG.imagesDir
 };
-api.imagesDir = CONFIG.imagesDir;
+
+api.pbScraper = api;
 module.exports = api;
