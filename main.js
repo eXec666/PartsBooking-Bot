@@ -163,7 +163,7 @@ ipcMain.on('open-db-viewer', () => {
     }
   });
 
-  win.loadFile(path.join(__dirname, 'db', 'dbViewer.html'));
+  win.loadFile(path.join(__dirname, 'renderer', 'dbViewer.html'));
 });
 
 app.on('window-all-closed', () => {

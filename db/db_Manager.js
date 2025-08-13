@@ -9,6 +9,8 @@ const initDb = require('./init_db');
 let db = null;
 const bus = new EventEmitter();
 
+function nowIso() { return new Date().toISOString(); }
+
 function connect() {
   if (!db) {
     initDb();
@@ -318,6 +320,16 @@ function generateCsvFiles({ chunkSize = DEFAULT_CHUNK } = {}) {
   }
 }
 
+
+function query(sql, params = []) {
+  console.log(`[${nowIso()}] [ENTRY] query: sql=${typeof sql === 'string' ? sql.slice(0, 200) : '<non-string>'}, paramsLength=${Array.isArray(params) ? params.length : 0}`);
+  const db = connect();
+  const stmt = db.prepare(sql);
+  const res = Array.isArray(params) && params.length ? stmt.all(params) : stmt.all();
+  console.log(`[${nowIso()}] [ENTRY] query: rows=${Array.isArray(res) ? res.length : 0}`);
+  return res;
+}
+
 module.exports = {
   connect,
   disconnect,
@@ -325,5 +337,6 @@ module.exports = {
   rankPrice,
   onDumpProgress,
   generateCsvFiles,
-  wipeDatabase
+  wipeDatabase,
+  query
 };

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DB Viewer</title>
+  <!-- If you use a strict CSP in Electron, adjust as needed. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' http://localhost:* https://*"> 
+  <!-- External styles (to be created next) -->
+   <script>
+    (() => {
+        try {
+            const mq = window.matchMedia('(prefers-color-scheme: dark)');
+            const stored = localStorage.getItem('theme'); // 'light' | 'dark' | null
+            const theme = stored || (mq.matches ? 'dark' : 'light');
+            document.documentElement.setAttribute('data-theme', theme);
+
+        // Follow system changes only when user hasn't chosen manually
+        if (!stored) {
+            mq.addEventListener('change', e => {
+            document.documentElement.setAttribute('data-theme', e.matches ? 'dark' : 'light');
+            });
+            }
+        } catch {}
+    })();
+    </script> 
+    <link rel="stylesheet" href="db_app.css" />
+</head>
+
+<body>
+    <div class="wrap">
+        <h1>Price Table</h1>
+        <button id="themeToggle" class="theme-toggle" type="button" aria-pressed="false" aria-label="Переключить тему"></button>
+
+
+        <div id="errorBanner" class="error-banner" role="alert"></div>
+
+        <section class="db-toolbar" aria-label="Filters and controls">
+          <div class="field">
+            <label for="fPart">Part #</label>
+            <input id="fPart" type="text" placeholder="e.g. R227379" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="fBrand">Brand</label>
+            <input id="fBrand" type="text" placeholder="e.g. JOHN DEERE" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="fRankMin">Rank ≥</label>
+            <input id="fRankMin" type="number" inputmode="numeric" min="0" step="1" />
+          </div>
+          <div class="field">
+            <label for="fRankMax">Rank ≤</label>
+            <input id="fRankMax" type="number" inputmode="numeric" min="0" step="1" />
+          </div>
+          <div class="field">
+            <label for="fOurMin">Our ≥</label>
+            <input id="fOurMin" type="number" inputmode="decimal" min="0" step="0.01" />
+          </div>
+          <div class="field">
+            <label for="fOurMax">Our ≤</label>
+            <input id="fOurMax" type="number" inputmode="decimal" min="0" step="0.01" />
+          </div>
+          <div class="toggles">
+            <label><input id="tCheaper" type="checkbox"/> Cheaper than leader</label>
+            <label><input id="tMissing" type="checkbox"/> Missing competitor</label>
+          </div>
+          <div class="field">
+            <label for="pageSize">Page size</label>
+            <select id="pageSize">
+              <option value="50">50</option>
+              <option value="100" selected>100</option>
+              <option value="200">200</option>
+              <option value="500">500</option>
+            </select>
+          </div>
+          <div class="pager">
+            <button id="prevPage" type="button" aria-label="Previous page">◀</button>
+            <span id="pageInfo" aria-live="polite"></span>
+            <button id="nextPage" type="button" aria-label="Next page">▶</button>
+          </div>
+     </section>
+
+        <main id="dbViewer" class="db-viewer" aria-live="polite"></main>
+    </div>
+
+    <!-- Renderer script -->
+    <script defer src="./dbViewerRenderer.js"></script>
+    <script src="themeToggle.js"></script>
+</body>
+</html>
