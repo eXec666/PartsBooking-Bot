@@ -43,10 +43,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const scrollDownBtn = document.getElementById('scrollDownBtn');
 
   // DB progress elements
-  const dbSection = document.getElementById('db-dump-section');
-  const dbBar = document.getElementById('db-progress-bar');
-  const dbLabel = document.getElementById('db-progress-label');
-  const dbMeta = document.getElementById('db-progress-meta');
+  
 
   // State variables
   let debounceTimer;
@@ -148,16 +145,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
     // Listen for DB dump progress and update the second bar
-  if (window.electronAPI?.onDbDumpProgress && dbSection && dbBar && dbLabel && dbMeta) {
-    const unsubscribeDb = window.electronAPI.onDbDumpProgress(({ table, done, total, percent }) => {
-      if (dbSection.style.display === 'none') dbSection.style.display = 'block';
-      const p = Math.max(0, Math.min(100, Number(percent) || 0));
-      dbBar.style.width = `${p}%`;
-      dbLabel.textContent = `${p}%`;
-      dbMeta.textContent = `${done} / ${total} rows • ${table}`;
-    });
-    window.addEventListener('beforeunload', () => unsubscribeDb && unsubscribeDb());
-  }
+  
 
   // --- DB Tab Buttons ---
   function displayTableData(data) {
