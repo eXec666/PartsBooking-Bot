@@ -11,6 +11,9 @@ const initDb = require('../db/init_db');
 const dbManager = require('../db/db_Manager');
 const { rankPrice } = dbManager;
 const https = require('https');
+const {HttpsProxyAgent} = require('https-proxy-agent');
+const proxyAgent = new HttpsProxyAgent('http://laxalzhv-rotate:f52gj67mrtp9@p.webshare.io:80');
+
 
 puppeteer.use(StealthPlugin());
 
@@ -55,6 +58,7 @@ function downloadImage(imageUrl, filePath, referer) {
 
     const doGet = (urlToGet) => {
       const req = https.get(urlToGet, {
+        agent: proxyAgent,
         headers: {
           'User-Agent': 'Mozilla/5.0',
           'Referer': referer || 'https://partsbooking.ru/'
@@ -141,7 +145,8 @@ class ParallelScraper {
         '--no-first-run',
         '--no-zygote',
         '--single-process',
-        '--disable-extensions'
+        '--disable-extensions',
+        '--proxy-server=http://p.webshare.io:80'
       ];
 
       const workerDataDir = path.join(app.getPath('userData'), `puppeteer_worker_${this.instanceId}`);
@@ -155,6 +160,10 @@ class ParallelScraper {
       });
 
       this.page = await this.browser.newPage();
+      await this.page.authenticate({
+        username: 'laxalzhv-rotate',
+        password: 'f52gj67mrtp9'
+      });
       await this.page.setViewport({ width: 1280, height: 800 });
       await this.page.setUserAgent(
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36'
