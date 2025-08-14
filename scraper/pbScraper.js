@@ -27,6 +27,7 @@ const CONFIG = {
     timeout: 60000,
     waitUntil: 'domcontentloaded' 
   },
+  apiWaitMs: 10000,
   imagesDir: path.resolve(process.resourcesPath || __dirname, 'images')
 };
 
@@ -256,7 +257,7 @@ class ParallelScraper {
 
     await navigateWithRetries(this.page, productUrl, CONFIG.navigation, 3);
     const apiResp = await this.page
-  .waitForResponse(r => r.url().includes('/price_search/search'), { timeout: 10000 })
+  .waitForResponse(r => r.url().includes('/price_search/search'), { timeout: CONFIG.apiWaitMs })
   .catch(() => null);
 
 // safety: if the response listener hasn’t set priceItems yet, parse here too
@@ -267,12 +268,43 @@ if (apiResp && !priceItems) {
   } catch {}
 }
 
- if (!priceItems) {
-   console.warn(
-     `[worker ${this.instanceId}] No price_items found for ${partNumber} after waiting ${maxWaitMs}ms`);
-     console.log(`[worker ${this.instanceId}] [${partNumber}] total bandwidth used: ${bytesIn} bytes`);
-     return { ok: false, error: 'No price_items', partNumber };
-   }
+if (!priceItems) {
+  console.warn(
+    `[worker ${this.instanceId}] No price_items found for ${partNumber} after initial wait of ${CONFIG.apiWaitMs}ms. Retrying...`
+  );
+
+  // brief pause before retry
+  await sleep(randInt(400, 900));
+
+  const apiResp2 = await this.page
+    .waitForResponse(r => r.url().includes('/price_search/search'), { timeout: Math.floor(CONFIG.apiWaitMs / 2) })
+    .catch(() => null);
+
+  if (apiResp2 && !priceItems) {
+    try {
+      const j = await apiResp2.json();
+      if (j && j.price_items) {
+        priceItems = j.price_items;
+        console.log(
+          `[worker ${this.instanceId}] Captured ${priceItems.length} price items for ${partNumber} on second attempt`
+        );
+      }
+    } catch {
+      // ignore JSON parse errors
+    }
+  }
+
+  // still nothing after retry
+  if (!priceItems) {
+    console.warn(
+      `[worker ${this.instanceId}] No price_items found for ${partNumber} after total wait of ${CONFIG.apiWaitMs + Math.floor(CONFIG.apiWaitMs / 2)}ms`
+    );
+    console.log(
+      `[worker ${this.instanceId}] [${partNumber}] total bandwidth used: ${bytesIn} bytes`
+    );
+    return { ok: false, error: 'No price_items', partNumber };
+  }
+}
     
 
     const imgRel = (priceItems || []).find(x => x?.sys_info?.goods_img_url)?.sys_info?.goods_img_url;
