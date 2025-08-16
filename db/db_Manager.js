@@ -5,6 +5,8 @@ const Database = require('better-sqlite3');
 const { DB_PATH } = require('./db_config.js');
 const initDb = require('./init_db');
 
+function nowIso() { return new Date().toISOString(); }
+
 // single shared connection
 let db = null;
 const bus = new EventEmitter();
@@ -24,6 +26,15 @@ function disconnect() {
     try { db.close(); } catch (_) {}
     db = null;
   }
+}
+
+function query(sql, params = []) {
+  console.log(`[${nowIso()}] [ENTRY] query: sql=${typeof sql === 'string' ? sql.slice(0, 200) : '<non-string>'}, paramsLength=${Array.isArray(params) ? params.length : 0}`);
+  const db = connect();
+  const stmt = db.prepare(sql);
+  const res = Array.isArray(params) && params.length ? stmt.all(params) : stmt.all();
+  console.log(`[${nowIso()}] [ENTRY] query: rows=${Array.isArray(res) ? res.length : 0}`);
+  return res;
 }
 
 function checkpoint(truncate = true) {
@@ -163,17 +174,27 @@ function rankPrice(slag, ourCode, partNumber, brandName) {
   const leader = normalized.find(x => x[2] === 1);
   const over   = normalized.find(x => x[2] === (out.rank_pos ?? 0) - 1);
   const under  = normalized.find(x => x[2] === (out.rank_pos ?? 0) + 1);
+  const last = normalized.find(x => x[2] === normalized.length && normalized.length != 1);
+  
 
   const weAreLeader = leader && leader[0] === String(ourCode);
+  const weAreLast = last && last[0] === String(ourCode);
 
   if (weAreLeader) {
-    out.leader_code  = 'G&G Leader';
+    out.leader_code  = 'G&G Лидер';
     out.leader_price = out.our_price;
-    out.over_code    = 'G&G Leader';
-    out.over_price   = null;
+    out.over_code    = 'G&G Лидер';
+    out.over_price   = 'G&G Лидер';
   } else if (leader) {
     out.leader_code  = leader[0];
     out.leader_price = leader[1];
+  }
+
+
+
+  if (weAreLast) {
+    out.under_code = "G&G Последний";
+    out.under_price = "G&G Последний";
   }
 
   if (over) {
@@ -183,6 +204,15 @@ function rankPrice(slag, ourCode, partNumber, brandName) {
   if (under) {
     out.under_code  = under[0];
     out.under_price = under[1];
+  }
+
+  if (out.rank_pos == null) {
+    out.rank_pos = "Нет листинга";
+    out.our_price = "Нет листинга";
+    out.over_code = "Нет листинга";
+    out.over_price = "Нет листинга";
+    out.under_code = "Нет листинга";
+    out.under_price = "Нет листинга";
   }
 
   return out;
@@ -204,7 +234,7 @@ function dumpToDb(tableName, rows) {
   const dbc = connect();
 
   const insert = dbc.prepare(`
-    INSERT OR REPLACE INTO prices
+    INSERT OR IGNORE INTO prices
       (part_number, brand_name, rank_pos, our_price,
        leader_code, leader_price, over_code, over_price, under_code, under_price)
     VALUES (@part_number, @brand_name, @rank_pos, @our_price,
@@ -224,6 +254,23 @@ function dumpToDb(tableName, rows) {
 
 function onDumpProgress(handler) {
   bus.on('dump-progress', handler);
+}
+
+// fast existence check on PRIMARY KEY(part_number, brand_name)
+let __existsStmt = null;
+/**
+ * Return true if a (part_number, brand_name) row already exists.
+ * @param {string} partNumber
+ * @param {string} brandName
+ */
+function existsPart(partNumber, brandName) {
+  const dbc = connect();
+  if (!__existsStmt) {
+    __existsStmt = dbc.prepare(
+      'SELECT 1 FROM prices WHERE part_number = ? AND brand_name = ? LIMIT 1'
+    );
+  }
+  return !!__existsStmt.get(partNumber, brandName);
 }
 
 // --- CSV EXPORT ---
@@ -325,5 +372,7 @@ module.exports = {
   rankPrice,
   onDumpProgress,
   generateCsvFiles,
-  wipeDatabase
+  wipeDatabase,
+  existsPart,
+  query
 };

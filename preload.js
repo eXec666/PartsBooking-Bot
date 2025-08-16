@@ -26,18 +26,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // File system helpers
   openFolder: (dirPath) => ipcRenderer.invoke('open-folder', dirPath),
 
-  // Progress & logs
+  // Progress
   onProgress:     (callback) => {
     ipcRenderer.on('progress-update', (event, percent, message) => {
       callback(percent, message);
     });
   },
-  onLog:          (callback) => {
-    ipcRenderer.on('log-message', (event, payload) => {
-      callback(payload);
-    });
-  },
-  
+
   onForceRefresh: (callback) => {
     ipcRenderer.on('force-refresh', callback);
   },
@@ -47,5 +42,44 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.on('ui:db-dump-progress', listener);
         // return unsubscribe so you can clean up if needed
         return () => ipcRenderer.removeListener('ui:db-dump-progress', listener);
-  }
+  },
+});
+
+
+
+
+// === Logging bridge ===
+contextBridge.exposeInMainWorld('logs', {
+  // Subscribe to snapshot + live appends
+  subscribe: (handler) => {
+    ipcRenderer.send('log:subscribe');
+    const onSnap = (_e, buf) => handler({ type: 'snapshot', data: buf });
+    const onAppend = (_e, entry) => handler({ type: 'append', data: entry });
+    ipcRenderer.on('log:snapshot', onSnap);
+    ipcRenderer.on('log:append', onAppend);
+    // return unsubscribe
+    return () => {
+      ipcRenderer.removeListener('log:snapshot', onSnap);
+      ipcRenderer.removeListener('log:append', onAppend);
+    };
+  },
+  // Emit one entry upstream
+  emit: (entry) => ipcRenderer.send('log:emit', entry),
+  open: () => ipcRenderer.invoke('log:open-file')
+});
+
+// Wrap page console in this renderer to forward logs to main.
+// Kept minimal and safe; does not alter Node/Electron internals.
+window.addEventListener('DOMContentLoaded', () => {
+  try {
+    const orig = { log: console.log, warn: console.warn, error: console.error };
+    ['log', 'warn', 'error'].forEach(level => {
+      console[level] = (...args) => {
+        try { orig[level](...args); } catch {}
+        try {
+          window.logs?.emit({ ts: Date.now(), level, args, source: 'renderer' });
+        } catch {}
+      };
+    });
+  } catch {}
 });

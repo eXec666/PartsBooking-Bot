@@ -6,20 +6,170 @@ const path = require('path');
 const fs = require('fs');
 const dbManager = require('./db/db_Manager');
 const {wipeDatabase} = dbManager
+const {query} = dbManager
 const {pbScraper, imagesDir} = require('./scraper/pbScraper');
-
 //const {data} = require('node-persist');
 
-//log forwarding
-function broadcastLog(level, ...args) {
-  originalLog.apply(console, args);
-  const msg = args.map(a => String(a)).join(' ');
-  BrowserWindow.getAllWindows().forEach(win => {
-    if (!win.isDestroyed()) win.webContents.send('log-message', { level, msg, ts: new Date().toISOString() });
+// main.js — Logging module (add near top-level, after requires)
+
+// === Logging: bounded UI tail + NDJSON file persistence with rotation ===
+const os = require('os');
+const { mkdirSync, existsSync, appendFile, statSync, renameSync, readFileSync, readdirSync, unlinkSync } = require('fs');
+const { join } = require('path');
+const APP_DIR = app.getAppPath();  // this resolves to your app folder (e.g. PartsBooking-Bot)
+const LOG_FILE = path.join(APP_DIR, 'logs.txt');
+const LOG_UI_CAP = 1000;                      // renderer shows at most this many
+const ROTATE_MAX_BYTES = 20 * 1024 * 1024;    // 20 MB
+const ROTATE_KEEP = 10;                       // keep last N rotated files
+
+
+// in-memory tail for fast snapshot of current run
+let uiTail = [];
+const subscribers = new Set();
+
+// write queue to reduce fs churn
+let writeQueue = [];
+let writeTimer = null;
+
+function enqueueWrite(entry) {
+  try {
+    writeQueue.push(JSON.stringify(entry) + os.EOL);
+    if (!writeTimer) writeTimer = setTimeout(flushWriteQueue, 75);
+  } catch {}
+}
+
+function flushWriteQueue() {
+  const payload = writeQueue.join('');
+  writeQueue = [];
+  writeTimer = null;
+
+  appendFile(LOG_FILE, payload, (err) => {
+    if (err) {
+      // Surface a synthetic error into the stream (not to disk to avoid loops)
+      broadcastAppend({ ts: Date.now(), level: 'error', msg: `Log write failed: ${err.message}`, source: 'main' });
+      return;
+    }
+    // rotate if needed
+    try {
+      const { size } = statSync(LOG_FILE);
+      if (size >= ROTATE_MAX_BYTES) rotateLogs();
+    } catch {}
   });
 }
-console.log = (...args) => broadcastLog('log', ...args);
-console.error = (...args) => broadcastLog('error', ...args);
+
+function rotateLogs() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const rotated = join(LOG_DIR, `log-${stamp}.txt`);
+  try {
+    renameSync(LOG_FILE, rotated);
+  } catch {}
+  // trim old files
+  try {
+    const files = readdirSync(LOG_DIR)
+      .filter(f => /^log-\d{4}-\d{2}-\d{2}T/.test(f))
+      .sort() // ISO names sort chronologically
+      .reverse();
+    files.slice(ROTATE_KEEP).forEach(f => { try { unlinkSync(join(LOG_DIR, f)); } catch {} });
+  } catch {}
+}
+
+function normalizeEntry(raw) {
+  // Accept either {ts, level, msg, source} or console args
+  const level = raw?.level || 'log';
+  const source = raw?.source || 'renderer';
+  const ts = raw?.ts || Date.now();
+  let msg = raw?.msg;
+  if (msg == null && Array.isArray(raw?.args)) {
+    msg = raw.args.map(a => safeToString(a)).join(' ');
+  }
+  if (msg == null) msg = safeToString(raw);
+  return { ts, level, msg, source, pid: raw?.pid || process.pid };
+}
+
+function safeToString(v) {
+  if (typeof v === 'string') return v;
+  try { return JSON.stringify(v); } catch { return String(v); }
+}
+
+function pushUiTail(entry) {
+  uiTail.push(entry);
+  if (uiTail.length > LOG_UI_CAP) uiTail.shift();
+}
+
+function broadcastAppend(entry) {
+  for (const wc of subscribers) {
+    if (!wc.isDestroyed()) wc.send('log:append', entry);
+  }
+}
+
+function ingest(entryLike) {
+  const entry = normalizeEntry(entryLike);
+  pushUiTail(entry);
+  enqueueWrite(entry);
+  broadcastAppend(entry);
+}
+
+function tailFileForSnapshot(max = LOG_UI_CAP) {
+  // Simple, robust: read last ~5MB, split lines, take last N
+  try {
+    const BUF = 5 * 1024 * 1024;
+    const stats = statSync(LOG_FILE);
+    const start = Math.max(0, stats.size - BUF);
+    const fd = readFileSync(LOG_FILE, { encoding: 'utf8', start }); // Node supports start offset in readFileSync via options in recent versions
+    const lines = fd.trim().split(/\r?\n/);
+    const parsed = [];
+    for (let i = Math.max(0, lines.length - max); i < lines.length; i++) {
+      try { parsed.push(JSON.parse(lines[i])); } catch {}
+    }
+    return parsed.slice(-max);
+  } catch {
+    return [];
+  }
+}
+
+// IPC: renderers subscribe and emit
+ipcMain.on('log:subscribe', (event) => {
+  const wc = event.sender;
+  subscribers.add(wc);
+  wc.once('destroyed', () => subscribers.delete(wc));
+
+  // snapshot: prefer in-memory tail; if empty (fresh boot before any logs), try file
+  const snapshot = uiTail.length ? uiTail.slice(-LOG_UI_CAP) : tailFileForSnapshot(LOG_UI_CAP);
+  wc.send('log:snapshot', snapshot);
+});
+
+ipcMain.on('log:emit', (_e, entry) => ingest(entry));
+
+// Wrap main-process console to also feed ingest
+(() => {
+  const orig = { log: console.log, warn: console.warn, error: console.error };
+  ['log', 'warn', 'error'].forEach(level => {
+    console[level] = (...args) => {
+      try { orig[level].apply(console, args); } catch {}
+      ingest({ ts: Date.now(), level, args, source: 'main', pid: process.pid });
+    };
+  });
+})();
+
+// Open logs.txt with the OS default app; fall back to revealing in folder on failure
+ipcMain.handle('log:open-file', async () => {
+  try {
+    const result = await shell.openPath(LOG_FILE); // empty string = success
+    if (result) {
+      shell.showItemInFolder(LOG_FILE);
+      return { ok: false, error: result };
+    }
+    return { ok: true };
+  } catch (e) {
+    try { shell.showItemInFolder(LOG_FILE); } catch {}
+    return { ok: false, error: e.message };
+  }
+});
+
+
+// === /Logging module ===
+
+
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -43,6 +193,12 @@ function createWindow() {
 
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   // win.webContents.openDevTools();
+
+  // If the renderer crashes/exits, just queue logs and avoid sending
+  win.webContents.on('render-process-gone', (_e, details) => {
+    console.warn('Renderer gone:', details && details.reason ? details.reason : 'unknown');
+  });
+
 }
 
 app.whenReady().then(createWindow);
@@ -57,19 +213,22 @@ ipcMain.handle('scrape-prices', async (event, inputFilePath) => {
     }
 
     console.log('🔌 Starting scraping...');
-    const result = await pbScraper.runWithProgress(
-      (percent, message) => {
-        console.log(`📦 Progress: ${percent}% - ${message}`);
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('progress-update', percent, message);
-        }
-      },
-      () => {
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('force-refresh');
-        }
-      },
-      inputFilePath
+    const result = await pbScraper.runWithProgress((percent, message) => {
+          try {
+            console.log(`Progress: ${percent}% - ${message}`);
+            if (win && !win.isDestroyed()) {
+              win.webContents.send('progress-update', percent, message);
+            }
+          } catch (progressErr) {
+            console.error('Progress callback failed:', progressErr);
+          }
+        },
+        () => {
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('force-refresh');
+          }
+        },
+        inputFilePath
     );
 
     console.log('Price scrape completed:', result);
@@ -163,7 +322,7 @@ ipcMain.on('open-db-viewer', () => {
     }
   });
 
-  win.loadFile(path.join(__dirname, 'db', 'dbViewer.html'));
+  win.loadFile(path.join(__dirname, 'renderer', 'dbViewer.html'));
 });
 
 app.on('window-all-closed', () => {

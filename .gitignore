@@ -4,7 +4,10 @@ JD/backup.js
 node_modules/
 dist/
 package-lock.json
+PartsBooking-Bot/package-lock.json
 data/
 
-# CSV temp results file
-output/
+prices.db
+prices.db-shm
+prices.db-wal
+logs.txt

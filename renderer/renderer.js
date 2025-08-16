@@ -19,13 +19,12 @@ document.addEventListener('DOMContentLoaded', () => {
       const tab = btn.dataset.tab;
       panels[tab].classList.add('active');
       // If opening DB tab, init its renderer
-      if (tab === 'db') window.dbViewerRenderer.init();
+      //if (tab === 'db') window.dbViewerRenderer.init();
     });
   });
 
   // --- DOM Elements ---
   // Main
-  const partInput         = document.getElementById('partNumberInput');
   const queryPartBtn      = document.getElementById('queryPartBtn');
   const selectFileBtn     = document.getElementById('selectFileBtn');
   const startPricesBtn = document.getElementById('startPricesBtn');
@@ -42,7 +41,149 @@ document.addEventListener('DOMContentLoaded', () => {
   const logsWindow   = document.getElementById('logsWindow');
   const scrollDownBtn = document.getElementById('scrollDownBtn');
 
-  // DB progress elements
+  //Progress updates:
+  const progressStats = document.getElementById('progressStats');
+  const statProcessed = document.getElementById('statProcessed');
+  const statElapsed   = document.getElementById('statElapsed');
+  const statEta       = document.getElementById('statEta');
+
+
+  // renderer.js — helper to parse and display the 3-line progress message
+  function updateProgressStats(message) {
+    if (!progressStats || !message) return;
+    // Expect lines like:
+    // "Processed 123 / 999"
+    // "Elapsed 00:01:23"
+    // "ETA 00:04:56"
+    const lines = String(message).split('\n').map(s => s.trim()).filter(Boolean);
+
+    const processed = lines.find(l => /^Processed/i.test(l)) || '';
+    const elapsed   = lines.find(l => /^Elapsed/i.test(l))   || '';
+    const eta       = lines.find(l => /^ETA/i.test(l))       || '';
+
+    if (statProcessed) statProcessed.textContent = processed || 'Обработано —';
+    if (statElapsed)   statElapsed.textContent   = elapsed   || 'Время работы —';
+    if (statEta)       statEta.textContent       = eta       || 'ETA —';
+  }
+
+
+
+  // renderer.js — wire up existing "Открыть логи" button (expects #openLogsBtn in HTML)
+
+  (function setupOpenLogsButton() {
+    const btn = document.getElementById('openLogsBtn');
+    const logsWindow = document.getElementById('logsWindow');
+    if (!btn || !window.logs) return;
+
+    // Avoid duplicate handlers
+    if (btn.__openLogsWired) return;
+    btn.__openLogsWired = true;
+
+    btn.addEventListener('click', async () => {
+      try {
+        const res = await window.logs.open();
+        if (res && res.ok === false && logsWindow) {
+          const line = document.createElement('div');
+          line.textContent = `[${new Date().toLocaleTimeString()}] ERROR (renderer) Не удалось открыть logs.txt: ${res.error}`;
+          logsWindow.appendChild(line);
+          logsWindow.scrollTop = logsWindow.scrollHeight;
+        }
+      } catch (e) {
+        if (logsWindow) {
+          const line = document.createElement('div');
+          line.textContent = `[${new Date().toLocaleTimeString()}] ERROR (renderer) Не удалось открыть logs.txt: ${e.message}`;
+          logsWindow.appendChild(line);
+          logsWindow.scrollTop = logsWindow.scrollHeight;
+        }
+      }
+    });
+  })();
+
+
+
+  /* === Logs UI (bounded FIFO, realtime) === */
+  (function setupLogsUI() {
+    const logsWindow = document.getElementById('logsWindow');
+    if (!logsWindow || !window.logs) return;
+
+    const UI_CAP = 1000;
+    const state = [];     // last N entries for rendering
+    let autoScroll = true;
+
+    // Preserve existing "down" button behavior: we only read its presence and attach no conflicting handlers.
+    const scrollDownBtn = document.getElementById('scrollDownBtn');
+
+    // Auto-scroll detection: if user scrolls up, pause auto-scroll; if near bottom, resume.
+    logsWindow.addEventListener('scroll', () => {
+      const nearBottom = (logsWindow.scrollTop + logsWindow.clientHeight) >= (logsWindow.scrollHeight - 4);
+      autoScroll = nearBottom;
+    }, { passive: true });
+
+    function format(entry) {
+      const dt = new Date(entry.ts || Date.now());
+      const ts = isNaN(dt.getTime()) ? '' : dt.toLocaleTimeString();
+      const lvl = (entry.level || 'log').toUpperCase();
+      const src = entry.source || 'renderer';
+      const msg = entry.msg != null ? String(entry.msg) :
+        (Array.isArray(entry.args) ? entry.args.map(a => {
+          if (typeof a === 'string') return a;
+          try { return JSON.stringify(a); } catch { return String(a); }
+        }).join(' ') : '');
+      return `[${ts}] ${lvl} (${src}) ${msg}`;
+    }
+
+    function renderSnapshot(list) {
+      state.length = 0;
+      logsWindow.textContent = ''; // flush DOM
+      const frag = document.createDocumentFragment();
+      const start = Math.max(0, list.length - UI_CAP);
+      for (let i = start; i < list.length; i++) {
+        const line = document.createElement('div');
+        line.textContent = format(list[i]);
+        frag.appendChild(line);
+        state.push(list[i]);
+      }
+      logsWindow.appendChild(frag);
+      if (autoScroll) logsWindow.scrollTop = logsWindow.scrollHeight;
+    }
+
+    function renderAppend(entry) {
+      state.push(entry);
+      if (state.length > UI_CAP) {
+        state.shift();
+        // remove one DOM node from the head if present
+        if (logsWindow.firstChild) logsWindow.removeChild(logsWindow.firstChild);
+      }
+      const line = document.createElement('div');
+      line.textContent = format(entry);
+      logsWindow.appendChild(line);
+      if (autoScroll) logsWindow.scrollTop = logsWindow.scrollHeight;
+    }
+
+    // Subscribe to stream
+    try {
+      window.logs.subscribe((evt) => {
+        if (evt.type === 'snapshot') renderSnapshot(evt.data || []);
+        else if (evt.type === 'append') renderAppend(evt.data);
+      });
+    } catch (e) {
+      // Fallback: show one error and continue
+      const err = document.createElement('div');
+      err.textContent = `[${new Date().toLocaleTimeString()}] ERROR (renderer) Log subscribe failed: ${e.message}`;
+      logsWindow.appendChild(err);
+    }
+
+    // Optional: if a "down" button exists, keep it working without altering its handler.
+    if (scrollDownBtn && !scrollDownBtn.__wiredForLogs) {
+      scrollDownBtn.addEventListener('click', () => {
+        logsWindow.scrollTop = logsWindow.scrollHeight;
+        autoScroll = true;
+      }, { passive: true });
+      scrollDownBtn.__wiredForLogs = true;
+    }
+  })();
+  /* === /Logs UI === */
+
   
 
   // State variables
@@ -50,28 +191,8 @@ document.addEventListener('DOMContentLoaded', () => {
   let selectedFilePath = null;
   let autoScroll       = true;
 
-  // --- Logging ---
-  function appendLog({ level, msg, ts }) {
-    const line = document.createElement('div');
-    line.textContent = `[${ts}] ${msg}`;
-    line.style.color = level === 'error' ? 'red' : '#888';
-    logsWindow.appendChild(line);
-    if (autoScroll) logsWindow.scrollTop = logsWindow.scrollHeight;
-  }
-  window.electronAPI.onLog(appendLog);
-
-  logsWindow.addEventListener('scroll', () => {
-    const atBottom = logsWindow.scrollTop + logsWindow.clientHeight 
-                   >= logsWindow.scrollHeight - 5;
-    autoScroll = atBottom;
-    scrollDownBtn.style.display = atBottom ? 'none' : 'block';
-  });
-  scrollDownBtn.addEventListener('click', () => {
-    logsWindow.scrollTop = logsWindow.scrollHeight;
-    autoScroll = true;
-    scrollDownBtn.style.display = 'none';
-  });
-
+  // --- Logging (bounded + batched DOM writes) ---
+  
 
   // --- Helpers ---
   function showNotification(message, isError = false) {
@@ -128,6 +249,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     startPricesBtn.disabled = true;
     startPricesBtn.textContent = 'Запуск Цен...';
+    // renderer.js — clear stats when a new run starts (inside startPricesBtn click handler, before calling scrape)
+    if (progressStats) {
+      if (statProcessed) statProcessed.textContent = 'Processed —';
+      if (statElapsed)   statElapsed.textContent   = 'Elapsed —';
+      if (statEta)       statEta.textContent       = 'ETA —';
+    }
+
     try {
       const res = await window.electronAPI.scrapePrices(selectedFilePath);
       if (res.error) throw new Error(res.error);
@@ -144,39 +272,6 @@ document.addEventListener('DOMContentLoaded', () => {
     queryPartBtn.addEventListener('click', performSearch);
   }
 
-    // Listen for DB dump progress and update the second bar
-  
-
-  // --- DB Tab Buttons ---
-  function displayTableData(data) {
-    createModal(
-      'Database Table Data',
-      `
-        <div class="table-container">
-          <table>
-            <thead>
-              <tr>
-                <th>Part Number</th>
-                <th>Equipment Ref ID</th>
-                <th>Node Path</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${data.map(row => `
-                <tr>
-                  <td>${row.partNumber || 'N/A'}</td>
-                  <td>${row.equipmentRefId || 'N/A'}</td>
-                  <td>${row.nodePath || 'N/A'}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
-        <p class="table-meta">Showing ${data.length} records</p>
-      `
-    );
-  }
-  
   wipeDbBtn.addEventListener('click', async () => {
     if (confirm('Are you sure you want to wipe the database?')) {
       try {
@@ -240,15 +335,14 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // --- Progress Updates ---
- window.electronAPI.onProgress(( percent, message ) => {
-   // prices_scraper may send null/undefined percent; guard the UI
+  if (window.electronAPI?.onProgress) window.electronAPI.onProgress((percent, message) => {
     if (typeof percent === 'number' && isFinite(percent)) {
-     const p = Math.max(0, Math.min(100, Math.round(percent)));
+      const p = Math.max(0, Math.min(100, Math.round(percent)));
       progressBar.style.width = `${p}%`;
       progressBar.textContent = `${p}%`;
     } else {
-      // keep bar as-is; expose textual pulse via content if needed
       progressBar.textContent = message || '';
     }
+    updateProgressStats(message);
   });
 });
