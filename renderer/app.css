@@ -338,6 +338,7 @@ input::placeholder { color: var(--text-muted); }
 .logs-window {
   margin-top: var(--space-2);
   height: 360px;
+  color: var(--text);
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius);

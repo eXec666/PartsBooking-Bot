@@ -9,157 +9,165 @@ const {wipeDatabase} = dbManager
 const {pbScraper, imagesDir} = require('./scraper/pbScraper');
 //const {data} = require('node-persist');
 
-// ---- safe, bounded log forwarding (main process) ----
-const origLog   = console.log.bind(console);
-const origWarn  = console.warn.bind(console);
-const origError = console.error.bind(console);
+// main.js — Logging module (add near top-level, after requires)
 
-// Bounded, batched queue to protect the renderer
-const LOG_QUEUE_MAX   = 2000;   // keep last 2k messages for replay
-const LOG_BATCH_SIZE  = 100;    // send at most 100 queued logs per flush
-let   logQueue        = [];
-let   flushingLogs    = false;
-let   broadcasting    = false;  // prevents recursion
+// === Logging: bounded UI tail + NDJSON file persistence with rotation ===
+const os = require('os');
+const { mkdirSync, existsSync, appendFile, statSync, renameSync, readFileSync, readdirSync, unlinkSync } = require('fs');
+const { join } = require('path');
+const APP_DIR = app.getAppPath();  // this resolves to your app folder (e.g. PartsBooking-Bot)
+const LOG_FILE = path.join(APP_DIR, 'logs.txt');
+const LOG_UI_CAP = 1000;                      // renderer shows at most this many
+const ROTATE_MAX_BYTES = 20 * 1024 * 1024;    // 20 MB
+const ROTATE_KEEP = 10;                       // keep last N rotated files
 
-// Persistent file logging
-let __logFilePath = null;
-function getLogFilePath() {
-  if (__logFilePath) return __logFilePath;
+
+// in-memory tail for fast snapshot of current run
+let uiTail = [];
+const subscribers = new Set();
+
+// write queue to reduce fs churn
+let writeQueue = [];
+let writeTimer = null;
+
+function enqueueWrite(entry) {
   try {
-    const dir = app.getPath('userData');
-    __logFilePath = path.join(dir, 'logs.txt');
-    try { fs.mkdirSync(dir, { recursive: true }); } catch {}
-  } catch {
-    // Fallback to app folder if userData not available yet
-    __logFilePath = path.join(__dirname, 'logs.txt');
-  }
-  return __logFilePath;
+    writeQueue.push(JSON.stringify(entry) + os.EOL);
+    if (!writeTimer) writeTimer = setTimeout(flushWriteQueue, 75);
+  } catch {}
 }
 
-function appendToLogFile(payload) {
-  const line = `[${payload.ts}] [${payload.level.toUpperCase()}] ${payload.msg}\n`;
-  try { fs.appendFile(getLogFilePath(), line, () => {}); }
-  catch (e) { origWarn('file log append failed:', e && e.message ? e.message : e); }
-}
+function flushWriteQueue() {
+  const payload = writeQueue.join('');
+  writeQueue = [];
+  writeTimer = null;
 
-function safeSerialize(args) {
-  const seen = new WeakSet();
-  return args.map((a) => {
-    if (a instanceof Error) {
-      return { name: a.name, message: a.message, stack: a.stack };
+  appendFile(LOG_FILE, payload, (err) => {
+    if (err) {
+      // Surface a synthetic error into the stream (not to disk to avoid loops)
+      broadcastAppend({ ts: Date.now(), level: 'error', msg: `Log write failed: ${err.message}`, source: 'main' });
+      return;
     }
-    if (typeof a === 'string') return a;
+    // rotate if needed
     try {
-      return JSON.parse(JSON.stringify(a, (k, v) => {
-        if (typeof v === 'object' && v !== null) {
-          if (seen.has(v)) return '[Circular]';
-          seen.add(v);
-        }
-        return v;
-      }));
-    } catch {
-      return String(a);
-    }
+      const { size } = statSync(LOG_FILE);
+      if (size >= ROTATE_MAX_BYTES) rotateLogs();
+    } catch {}
   });
 }
 
-function enqueueLog(payload) {
-  logQueue.push(payload);
-  if (logQueue.length > LOG_QUEUE_MAX) {
-    logQueue.splice(0, logQueue.length - LOG_QUEUE_MAX);
+function rotateLogs() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const rotated = join(LOG_DIR, `log-${stamp}.txt`);
+  try {
+    renameSync(LOG_FILE, rotated);
+  } catch {}
+  // trim old files
+  try {
+    const files = readdirSync(LOG_DIR)
+      .filter(f => /^log-\d{4}-\d{2}-\d{2}T/.test(f))
+      .sort() // ISO names sort chronologically
+      .reverse();
+    files.slice(ROTATE_KEEP).forEach(f => { try { unlinkSync(join(LOG_DIR, f)); } catch {} });
+  } catch {}
+}
+
+function normalizeEntry(raw) {
+  // Accept either {ts, level, msg, source} or console args
+  const level = raw?.level || 'log';
+  const source = raw?.source || 'renderer';
+  const ts = raw?.ts || Date.now();
+  let msg = raw?.msg;
+  if (msg == null && Array.isArray(raw?.args)) {
+    msg = raw.args.map(a => safeToString(a)).join(' ');
+  }
+  if (msg == null) msg = safeToString(raw);
+  return { ts, level, msg, source, pid: raw?.pid || process.pid };
+}
+
+function safeToString(v) {
+  if (typeof v === 'string') return v;
+  try { return JSON.stringify(v); } catch { return String(v); }
+}
+
+function pushUiTail(entry) {
+  uiTail.push(entry);
+  if (uiTail.length > LOG_UI_CAP) uiTail.shift();
+}
+
+function broadcastAppend(entry) {
+  for (const wc of subscribers) {
+    if (!wc.isDestroyed()) wc.send('log:append', entry);
   }
 }
 
-function canSendTo(wc) {
-  try {
-    return wc
-      && !wc.isDestroyed()
-      && !wc.isLoadingMainFrame()
-      && wc.mainFrame
-      && !wc.mainFrame.isDestroyed();
-  } catch { return false; }
+function ingest(entryLike) {
+  const entry = normalizeEntry(entryLike);
+  pushUiTail(entry);
+  enqueueWrite(entry);
+  broadcastAppend(entry);
 }
 
-function flushLogsTo(win) {
-  if (flushingLogs) return;
-  const wc = win && win.webContents;
-  if (!canSendTo(wc) || logQueue.length === 0) return;
-
-  flushingLogs = true;
+function tailFileForSnapshot(max = LOG_UI_CAP) {
+  // Simple, robust: read last ~5MB, split lines, take last N
   try {
-    const count = Math.min(LOG_BATCH_SIZE, logQueue.length);
-    const batch = logQueue.splice(0, count);
-    for (let i = 0; i < batch.length; i++) {
-      wc.send('log-message', batch[i]); // keep compatibility with existing preload
+    const BUF = 5 * 1024 * 1024;
+    const stats = statSync(LOG_FILE);
+    const start = Math.max(0, stats.size - BUF);
+    const fd = readFileSync(LOG_FILE, { encoding: 'utf8', start }); // Node supports start offset in readFileSync via options in recent versions
+    const lines = fd.trim().split(/\r?\n/);
+    const parsed = [];
+    for (let i = Math.max(0, lines.length - max); i < lines.length; i++) {
+      try { parsed.push(JSON.parse(lines[i])); } catch {}
     }
-  } catch (e) {
-    // If sending fails, we can’t know how many were delivered; safest is to put batch back at front
-    // Note: order preserved by unshifting reversed
-    for (let i = batch.length - 1; i >= 0; i--) logQueue.unshift(batch[i]);
-    origWarn('flushLogsTo failed:', e && e.message ? e.message : e);
-  } finally {
-    flushingLogs = false;
+    return parsed.slice(-max);
+  } catch {
+    return [];
   }
 }
 
-function broadcastLog(level, ...args) {
-  // prevent recursion if our own logging throws
-  if (broadcasting) {
-    if (level === 'error') return origError(...args);
-    if (level === 'warn')  return origWarn(...args);
-    return origLog(...args);
-  }
+// IPC: renderers subscribe and emit
+ipcMain.on('log:subscribe', (event) => {
+  const wc = event.sender;
+  subscribers.add(wc);
+  wc.once('destroyed', () => subscribers.delete(wc));
 
-  broadcasting = true;
-  try {
-    // 1) Write to original console
-    if (level === 'error') origError(...args);
-    else if (level === 'warn') origWarn(...args);
-    else origLog(...args);
+  // snapshot: prefer in-memory tail; if empty (fresh boot before any logs), try file
+  const snapshot = uiTail.length ? uiTail.slice(-LOG_UI_CAP) : tailFileForSnapshot(LOG_UI_CAP);
+  wc.send('log:snapshot', snapshot);
+});
 
-    // 2) Normalize payload
-    const parts = safeSerialize(args).map(v =>
-      typeof v === 'string' ? v : JSON.stringify(v)
-    );
-    const payload = {
-      level,
-      ts: new Date().toISOString(),
-      msg: parts.join(' ')
+ipcMain.on('log:emit', (_e, entry) => ingest(entry));
+
+// Wrap main-process console to also feed ingest
+(() => {
+  const orig = { log: console.log, warn: console.warn, error: console.error };
+  ['log', 'warn', 'error'].forEach(level => {
+    console[level] = (...args) => {
+      try { orig[level].apply(console, args); } catch {}
+      ingest({ ts: Date.now(), level, args, source: 'main', pid: process.pid });
     };
+  });
+})();
 
-    // 3) Always append to logs.txt
-    appendToLogFile(payload);
-
-    // 4) Try to deliver live to open windows
-    const wins = BrowserWindow.getAllWindows();
-    if (wins.length === 0) {
-      enqueueLog(payload);
-    } else {
-      let sent = false;
-      for (const win of wins) {
-        const wc = win.webContents;
-        if (!canSendTo(wc)) continue;
-        try {
-          wc.send('log-message', payload);
-          sent = true;
-        } catch (e) {
-          enqueueLog(payload);
-          origWarn('log-message send failed:', e && e.message ? e.message : e);
-        }
-      }
-      if (!sent) enqueueLog(payload);
-      // Opportunistic flush of any backlog
-      for (const win of wins) flushLogsTo(win);
+// Open logs.txt with the OS default app; fall back to revealing in folder on failure
+ipcMain.handle('log:open-file', async () => {
+  try {
+    const result = await shell.openPath(LOG_FILE); // empty string = success
+    if (result) {
+      shell.showItemInFolder(LOG_FILE);
+      return { ok: false, error: result };
     }
-  } finally {
-    broadcasting = false;
+    return { ok: true };
+  } catch (e) {
+    try { shell.showItemInFolder(LOG_FILE); } catch {}
+    return { ok: false, error: e.message };
   }
-}
+});
 
-// Hook global consoles
-console.log  = (...args) => broadcastLog('log',   ...args);
-console.warn = (...args) => broadcastLog('warn',  ...args);
-console.error= (...args) => broadcastLog('error', ...args);
+
+// === /Logging module ===
+
 
 
 function createWindow() {
@@ -184,8 +192,6 @@ function createWindow() {
 
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   // win.webContents.openDevTools();
-  // Flush any queued logs after renderer finishes loading
-  win.webContents.on('did-finish-load', () => flushLogsTo(win));
 
   // If the renderer crashes/exits, just queue logs and avoid sending
   win.webContents.on('render-process-gone', (_e, details) => {

@@ -1,0 +1,53 @@
+const MAX_LOG_LINES = 1000;
+  let pendingLogNodes = [];
+  let logsFlushScheduled = false;
+
+  function scheduleLogsFlush() {
+    if (logsFlushScheduled) return;
+    logsFlushScheduled = true;
+    requestAnimationFrame(() => {
+      const frag = document.createDocumentFragment();
+      for (const n of pendingLogNodes) frag.appendChild(n);
+      pendingLogNodes = [];
+      if (!logsWindow) { pendingLogNodes.length = 0; logsFlushScheduled = false; return; }
+      logsWindow.appendChild(frag);
+
+      // Enforce cap
+      while (logsWindow.children.length > MAX_LOG_LINES) {
+        logsWindow.removeChild(logsWindow.firstChild);
+      }
+      if (autoScroll) logsWindow.scrollTop = logsWindow.scrollHeight;
+      logsFlushScheduled = false;
+    });
+  }
+
+  function appendLog({ level, msg, ts }) {
+    const line = document.createElement('div');
+    line.textContent = `[${ts}] ${msg}`;
+    line.style.color = level === 'error' ? 'red' : '#888';
+    pendingLogNodes.push(line);
+    scheduleLogsFlush();
+  }
+
+  // Single-message listener (existing channel)
+  if (window.electronAPI?.onLog) window.electronAPI.onLog(appendLog);
+
+  // Optional batched listener if you later add it in preload
+  if (window.electronAPI?.onLogBatch) {
+    window.electronAPI.onLogBatch((batch) => {
+      for (const item of batch) appendLog(item);
+    });
+  }
+
+
+  logsWindow.addEventListener('scroll', () => {
+    const atBottom = logsWindow.scrollTop + logsWindow.clientHeight 
+                   >= logsWindow.scrollHeight - 5;
+    autoScroll = atBottom;
+    scrollDownBtn.style.display = atBottom ? 'none' : 'block';
+  });
+  scrollDownBtn.addEventListener('click', () => {
+    logsWindow.scrollTop = logsWindow.scrollHeight;
+    autoScroll = true;
+    scrollDownBtn.style.display = 'none';
+  });
