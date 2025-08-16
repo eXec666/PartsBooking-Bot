@@ -31,6 +31,7 @@ const subscribers = new Set();
 let writeQueue = [];
 let writeTimer = null;
 
+fs.writeFileSync('logs.txt', '');
 function enqueueWrite(entry) {
   try {
     writeQueue.push(JSON.stringify(entry) + os.EOL);
