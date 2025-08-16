@@ -4,6 +4,7 @@ JD/backup.js
 node_modules/
 dist/
 package-lock.json
+PartsBooking-Bot/package-lock.json
 data/
 
 logs.txt
