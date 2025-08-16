@@ -52,17 +52,24 @@
     <section id="main" class="tab-content active" role="tabpanel" aria-labelledby="tab-main">
 
       <div class="card">
+        <div class="main-card">  
+          <div class="btn-group">
+            <button id="selectFileBtn" class="btn" type="button">Выбрать Excel файл</button>
+            <button id="startPricesBtn" class="btn btn--primary" type="button" disabled>Запустить анализ цен</button>
+          </div>
 
-        <div class="btn-group">
-          <button id="selectFileBtn" class="btn" type="button">Выбрать Excel файл</button>
-          <button id="startPricesBtn" class="btn btn--primary" type="button" disabled>Запустить анализ цен</button>
+          <div class="progressStats" class="muted" style="float:right; text-align:right;">
+            <div id="statProcessed">Обработано —</div>
+            <div id="statElapsed">Время работы —</div>
+            <div id="statEta">ETA —</div>
+          </div>
         </div>
 
         <div id="filePathDisplay" class="muted">Файл не выбран</div>
 
         <!-- Keep original structure for renderer compatibility -->
         <div id="progressBar" class="progress">
-          <div></div>
+        </div>
         </div>
       </div>
     </section>

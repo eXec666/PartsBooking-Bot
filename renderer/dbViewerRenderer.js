@@ -1,20 +1,6 @@
-// dbViewerRenderer.js — rewritten to fit the new dbViewer.html
-// Assumptions & wiring notes:
-// - The HTML provides inputs with ids: fPart, fBrand, fRankMin, fRankMax, fOurMin, fOurMax,
-//   toggles tCheaper, tMissing, pager controls pageSize, prevPage, nextPage, pageInfo,
-//   and containers errorBanner, dbViewer. (Matches dbViewer.html)
-// - Data backend: this module tries several adapters in this order:
-//     1) window.db.queryPrices(payload)
-//     2) window.api.queryPrices(payload)
-//     3) window.electronAPI.queryPrices(payload)
-//     4) HTTP GET to '/api/prices'
-//   Implement ONE of these on your side; payload shape documented below.
-// - Expected backend response: { items: PriceRow[], total: number }
-//   where PriceRow has at least: { id, part, brand, rank, ourPrice, leaderPrice, leaderName?, updatedAt? }
-//   Any extra fields are ignored. Missing leaderPrice is treated as "Missing competitor price".
-// - Sorting fields used from UI: 'rank' | 'part' | 'brand' | 'ourPrice' | 'leaderPrice' | 'delta' | 'updatedAt'
-//
-// Author: Tabs (2025)
+// dbViewerRenderer.js — adapted for all-text DB fields
+// Assumptions remain as in the previous version. Key change: all backend fields are strings.
+// We defensively coerce text to numbers/strings before filtering, sorting, and math.
 
 /* eslint-disable no-console */
 
@@ -59,55 +45,108 @@ const el = {
 };
 
 // ---------- Utilities ----------
-const debounce = (fn, ms = 300) => {
-  let t;
-  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+const debounce = (fn, ms = 300) => { let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); }; };
+
+const toText = (v) => (v == null ? '' : String(v).trim());
+const hasDigit = (s) => /\d/.test(s || '');
+const hasAlpha = (s) => /[A-Za-z]/.test(s || '');
+
+// Robust numeric parser from arbitrary text ("€ 1 234,56", "1,234.56", "(123)")
+function parseNumberLike(v) {
+  const s0 = toText(v);
+  if (!hasDigit(s0)) return null;
+  // remove spaces, keep digits, dots, commas, minus, parentheses
+  let s = s0.replace(/\s+/g, '');
+  const negByParens = /^\(.*\)$/.test(s);
+  if (negByParens) s = s.slice(1, -1);
+  s = s.replace(/[^0-9.,\-]/g, '');
+  // If both comma and dot present -> assume comma is thousands, dot is decimal
+  if (s.includes('.') && s.includes(',')) s = s.replace(/,/g, '');
+  // If only comma present -> treat comma as decimal
+  else if (s.includes(',') && !s.includes('.')) s = s.replace(/,/g, '.');
+  // If multiple dots remain, keep last as decimal, remove the rest (thousands)
+  if ((s.match(/\./g) || []).length > 1) {
+    const last = s.lastIndexOf('.');
+    s = s.slice(0, last).replace(/\./g, '') + s.slice(last);
+  }
+  const n = parseFloat(s);
+  if (!Number.isFinite(n)) return null;
+  return negByParens ? -n : n;
+}
+
+const parseDateLike = (v) => {
+  const s = toText(v);
+  if (!s) return null;
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
 };
 
-const parseNum = (v) => {
-  if (v === '' || v == null) return undefined;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : undefined;
+const textOrEmpty = (v) => {
+  const s = toText(v);
+  return (hasAlpha(s) || hasDigit(s)) ? s : '';
 };
+
+const parseNum = (v) => { if (v === '' || v == null) return undefined; const n = Number(v); return Number.isFinite(n) ? n : undefined; };
 
 const fmtNum = (v, dp = 2) => (v == null || Number.isNaN(v) ? '—' : Number(v).toFixed(dp));
 
-const fmtDate = (iso) => {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleString();
-};
+const fmtDate = (iso) => { if (!iso) return '—'; const d = new Date(iso); if (Number.isNaN(d.getTime())) return '—'; return d.toLocaleString(); };
 
 const computeDelta = (ourPrice, leaderPrice) => {
-  if (ourPrice == null || leaderPrice == null || !Number.isFinite(ourPrice) || !Number.isFinite(leaderPrice))
-    return { abs: null, pct: null, sign: 'neu' };
-  const abs = ourPrice - leaderPrice; // positive => more expensive than leader
-  const pct = leaderPrice === 0 ? null : abs / leaderPrice;
+  const a = Number(ourPrice);
+  const b = Number(leaderPrice);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return { abs: null, pct: null, sign: 'neu' };
+  const abs = a - b; // positive => more expensive than leader
+  const pct = b === 0 ? null : abs / b;
   const sign = abs < 0 ? 'pos' : abs > 0 ? 'neg' : 'neu'; // pos => cheaper than leader
   return { abs, pct, sign };
 };
 
 const arrowFor = (by) => state.sort.by === by ? (state.sort.dir === 'asc' ? '▲' : '▼') : '▲';
 
-const saveUiState = () => {
-  try { localStorage.setItem('dbv.ui', JSON.stringify({
-    filters: state.filters,
-    sort: state.sort,
-    page: state.page,
-  })); } catch {}
-};
+const saveUiState = () => { try { localStorage.setItem('dbv.ui', JSON.stringify({ filters: state.filters, sort: state.sort, page: state.page })); } catch {} };
+const restoreUiState = () => { try { const raw = localStorage.getItem('dbv.ui'); if (!raw) return; const s = JSON.parse(raw); Object.assign(state.filters, s.filters || {}); Object.assign(state.sort, s.sort || {}); Object.assign(state.page, s.page || {}); } catch {} };
 
-const restoreUiState = () => {
+// ---------- Row normalization (all sources) ----------
+function normalizeRow(r) {
+  // Accept both old canonical keys and raw backend keys, all text-typed
+  const part = textOrEmpty(r.part ?? r.part_number ?? r.Part ?? r.PART);
+  const brand = textOrEmpty(r.brand ?? r.brand_name ?? r.Brand ?? r.BRAND);
+  const rank = parseNumberLike(r.rank ?? r.rank_pos ?? r.Rank ?? r.RANK);
+  const ourPrice = parseNumberLike(r.ourPrice ?? r.our_price ?? r.Our ?? r.OUR);
+  const leaderPrice = parseNumberLike(r.leaderPrice ?? r.leader_price ?? r.Leader ?? r.LEADER);
+  const leaderName = textOrEmpty(r.leaderName ?? r.leader_code ?? r.LeaderName);
+  const overPrice = parseNumberLike(r.overPrice ?? r.over_price);
+  const overCode = textOrEmpty(r.overCode ?? r.over_code);
+  const underPrice = parseNumberLike(r.underPrice ?? r.under_price);
+  const underCode = textOrEmpty(r.underCode ?? r.under_code);
+  const updatedAt = parseDateLike(r.updatedAt ?? r.updated_at ?? r.last_update);
+
+  return {
+    id: toText(r.id ?? `${brand || ''}:${part || ''}`) || cryptoRandomId(),
+    part,
+    brand,
+    rank: Number.isFinite(rank) ? rank : null,
+    ourPrice: Number.isFinite(ourPrice) ? ourPrice : null,
+    leaderPrice: Number.isFinite(leaderPrice) ? leaderPrice : null,
+    leaderName: leaderName || null,
+    overCode: overCode || null,
+    overPrice: Number.isFinite(overPrice) ? overPrice : null,
+    underCode: underCode || null,
+    underPrice: Number.isFinite(underPrice) ? underPrice : null,
+    updatedAt: updatedAt,
+  };
+}
+
+function cryptoRandomId() {
   try {
-    const raw = localStorage.getItem('dbv.ui');
-    if (!raw) return;
-    const s = JSON.parse(raw);
-    Object.assign(state.filters, s.filters || {});
-    Object.assign(state.sort, s.sort || {});
-    Object.assign(state.page, s.page || {});
-  } catch {}
-};
+    const a = new Uint32Array(4);
+    crypto.getRandomValues(a);
+    return Array.from(a, x => x.toString(16).padStart(8, '0')).join('');
+  } catch { // Fallback
+    return 'id_' + Math.random().toString(36).slice(2);
+  }
+}
 
 // ---------- Backend adapter ----------
 async function queryBackend(payload) {
@@ -115,103 +154,36 @@ async function queryBackend(payload) {
   if (window.electronAPI?.getTableData) {
     try {
       const raw = await window.electronAPI.getTableData();
-      // Expected shape now: { success: true, data: { prices: [...] } }
       const rowsSource = Array.isArray(raw?.data?.prices)
         ? raw.data.prices
         : (Array.isArray(raw?.prices) ? raw.prices : (Array.isArray(raw) ? raw : []));
 
-      const norm = (r) => {
-        const rank = r.rank_pos;
-        const our = r.our_price;
-        const leader = r.leader_price;
-        const over = r.over_price;
-        const under = r.under_price;
-        return {
-          // canonical fields used by the table
-          id: r.id ?? `${r.brand_name || ''}:${r.part_number || ''}`,
-          part: r.part_number ?? '',
-          brand: r.brand_name ?? '',
-          rank: Number.isFinite(Number(rank)) ? Number(rank) : null,
-          ourPrice: Number.isFinite(Number(our)) ? Number(our) : null,
-          leaderPrice: Number.isFinite(Number(leader)) ? Number(leader) : null,
-          // keep extra hints if we want to show tooltips later
-          leaderName: r.leader_code ?? null,
-          overCode: r.over_code ?? null,
-          overPrice: Number.isFinite(Number(over)) ? Number(over) : null,
-          underCode: r.under_code ?? null,
-          underPrice: Number.isFinite(Number(under)) ? Number(under) : null,
-          updatedAt: null,
-        };
-      };
-
-      const data = rowsSource.map(norm);
-      const { filters, sort, page } = payload;
-
-      const match = (r) => {
-        const part = String(r.part || '').toLowerCase();
-        const brand = String(r.brand || '').toLowerCase();
-        const our = Number(r.ourPrice);
-        const leader = Number(r.leaderPrice);
-        if (filters.part && !part.includes(String(filters.part).toLowerCase())) return false;
-        if (filters.brand && !brand.includes(String(filters.brand).toLowerCase())) return false;
-        if (filters.rankMin != null && Number(r.rank) < filters.rankMin) return false;
-        if (filters.rankMax != null && Number(r.rank) > filters.rankMax) return false;
-        if (filters.ourMin != null && (!Number.isFinite(our) || our < filters.ourMin)) return false;
-        if (filters.ourMax != null && (!Number.isFinite(our) || our > filters.ourMax)) return false;
-        if (filters.cheaper && !(Number.isFinite(our) && Number.isFinite(leader) && our < leader)) return false;
-        if (filters.missing && Number.isFinite(leader)) return false;
-        return true;
-      };
-
-      const getSortVal = (r, by) => {
-        switch (by) {
-          case 'delta': {
-            const d = computeDelta(Number(r.ourPrice), Number(r.leaderPrice));
-            return d.abs == null ? Number.POSITIVE_INFINITY : d.abs;
-          }
-          case 'updatedAt':
-            return r.updatedAt ? new Date(r.updatedAt).getTime() : 0;
-          case 'ourPrice':
-            return Number(r.ourPrice);
-          case 'leaderPrice':
-            return Number(r.leaderPrice);
-          default:
-            return r[by];
-        }
-      };
-
-      let filtered = data.filter(match);
-      filtered.sort((a, b) => {
-        const va = getSortVal(a, sort.by);
-        const vb = getSortVal(b, sort.by);
-        if (va == null && vb == null) return 0;
-        if (va == null) return 1;
-        if (vb == null) return -1;
-        if (typeof va === 'string' || typeof vb === 'string') {
-          return sort.dir === 'asc' ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
-        }
-        return sort.dir === 'asc' ? (va - vb) : (vb - va);
-      });
-
-      const total = filtered.length;
-      const start = page.index * page.size;
-      const items = filtered.slice(start, start + page.size);
-      return { items, total };
+      const data = rowsSource.map(normalizeRow);
+      return filterSortPaginate(data, payload);
     } catch (e) {
       console.warn('electronAPI.getTableData failed, will try IPC/HTTP fallbacks', e);
     }
   }
 
-  // IPC adapters (if available) — expects server-side filtering
+  // IPC adapters (server-side filtering unknown; normalize defensively)
   try {
-    if (window.db?.queryPrices) return await window.db.queryPrices(payload);
-    if (window.api?.queryPrices) return await window.api.queryPrices(payload);
-    if (window.electronAPI?.queryPrices) return await window.electronAPI.queryPrices(payload);
+    if (window.db?.queryPrices) {
+      const res = await window.db.queryPrices(payload);
+      return postNormalize(res, payload);
+    }
+    if (window.api?.queryPrices) {
+      const res = await window.api.queryPrices(payload);
+      return postNormalize(res, payload);
+    }
+    if (window.electronAPI?.queryPrices) {
+      const res = await window.electronAPI.queryPrices(payload);
+      return postNormalize(res, payload);
+    }
   } catch (e) {
     console.warn('IPC queryPrices failed, will try HTTP fallback', e);
   }
 
-  // HTTP fallback (server expected to filter/sort/paginate)
+  // HTTP fallback (server expected to filter/sort/paginate); still normalize in case server returns text
   const params = new URLSearchParams();
   const { filters, sort, page } = payload;
   if (filters.part) params.set('part', filters.part);
@@ -229,7 +201,72 @@ async function queryBackend(payload) {
 
   const res = await fetch(`/api/prices?${params.toString()}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return await res.json();
+  const json = await res.json();
+  return postNormalize(json, payload);
+}
+
+function postNormalize(res, payload) {
+  const rows = Array.isArray(res?.items) ? res.items : Array.isArray(res) ? res : [];
+  const data = rows.map(normalizeRow);
+  // If server already paginated, keep its total if finite; else compute locally
+  const total = Number.isFinite(res?.total) ? res.total : data.length;
+  if (Array.isArray(res?.items)) return { items: data, total };
+  // If not paginated, filter/sort/paginate locally
+  return filterSortPaginate(data, payload);
+}
+
+function filterSortPaginate(data, payload) {
+  const { filters, sort, page } = payload;
+
+  const match = (r) => {
+    const part = toText(r.part).toLowerCase();
+    const brand = toText(r.brand).toLowerCase();
+    const our = Number(r.ourPrice);
+    const leader = Number(r.leaderPrice);
+    if (filters.part && !part.includes(toText(filters.part).toLowerCase())) return false;
+    if (filters.brand && !brand.includes(toText(filters.brand).toLowerCase())) return false;
+    if (filters.rankMin != null && !(Number.isFinite(r.rank) && r.rank >= filters.rankMin)) return false;
+    if (filters.rankMax != null && !(Number.isFinite(r.rank) && r.rank <= filters.rankMax)) return false;
+    if (filters.ourMin != null && !(Number.isFinite(our) && our >= filters.ourMin)) return false;
+    if (filters.ourMax != null && !(Number.isFinite(our) && our <= filters.ourMax)) return false;
+    if (filters.cheaper && !(Number.isFinite(our) && Number.isFinite(leader) && our < leader)) return false;
+    if (filters.missing && Number.isFinite(leader)) return false;
+    return true;
+  };
+
+  const getSortVal = (r, by) => {
+    switch (by) {
+      case 'delta': {
+        const d = computeDelta(r.ourPrice, r.leaderPrice);
+        return d.abs == null ? Number.POSITIVE_INFINITY : d.abs;
+      }
+      case 'updatedAt':
+        return r.updatedAt ? new Date(r.updatedAt).getTime() : 0;
+      case 'ourPrice':
+        return Number(r.ourPrice);
+      case 'leaderPrice':
+        return Number(r.leaderPrice);
+      default:
+        return r[by];
+    }
+  };
+
+  let filtered = data.filter(match);
+  filtered.sort((a, b) => {
+    const va = getSortVal(a, sort.by);
+    const vb = getSortVal(b, sort.by);
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    if (typeof va === 'string' || typeof vb === 'string')
+      return sort.dir === 'asc' ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
+    return sort.dir === 'asc' ? (va - vb) : (vb - va);
+  });
+
+  const total = filtered.length;
+  const start = page.index * page.size;
+  const items = filtered.slice(start, start + page.size);
+  return { items, total };
 }
 
 // ---------- Rendering ----------
@@ -260,8 +297,8 @@ function renderTable(items) {
     return `
       <tr>
         <td>${r.rank ?? '—'}</td>
-        <td><code>${r.part ?? ''}</code></td>
-        <td>${r.brand ?? ''}</td>
+        <td><code>${toText(r.part)}</code></td>
+        <td>${toText(r.brand)}</td>
         <td>${fmtNum(r.ourPrice)}</td>
         <td>${r.leaderPrice == null ? '—' : fmtNum(r.leaderPrice)}</td>
         <td>${deltaHtml}</td>
@@ -282,12 +319,8 @@ function updatePageInfo() {
 
 function setError(message) {
   state.lastError = message || null;
-  if (state.lastError) {
-    el.error.textContent = state.lastError;
-    el.error.style.display = '';
-  } else {
-    el.error.style.display = 'none';
-  }
+  if (state.lastError) { el.error.textContent = state.lastError; el.error.style.display = ''; }
+  else { el.error.style.display = 'none'; }
 }
 
 async function refresh() {
@@ -298,31 +331,20 @@ async function refresh() {
   el.viewer.innerHTML = '<div class="empty">Loading…</div>';
 
   try {
-    const payload = {
-      filters: { ...state.filters },
-      sort: { ...state.sort },
-      page: { ...state.page },
-    };
-
+    const payload = { filters: { ...state.filters }, sort: { ...state.sort }, page: { ...state.page } };
     const res = await queryBackend(payload);
-    // Defensive parsing
-    const items = Array.isArray(res?.items) ? res.items : [];
+    const items = Array.isArray(res?.items) ? res.items.map(normalizeRow) : [];
     state.total = Number.isFinite(res?.total) ? res.total : items.length;
     state.data = items;
 
     el.viewer.innerHTML = renderTable(items);
 
-    // Bind header sort handlers after render
     qsa('th.sortable', el.viewer).forEach(th => {
       th.addEventListener('click', () => {
         const key = th.getAttribute('data-key');
         if (!key) return;
-        if (state.sort.by === key) {
-          state.sort.dir = state.sort.dir === 'asc' ? 'desc' : 'asc';
-        } else {
-          state.sort.by = key;
-          state.sort.dir = key === 'part' || key === 'brand' ? 'asc' : 'desc';
-        }
+        if (state.sort.by === key) state.sort.dir = state.sort.dir === 'asc' ? 'desc' : 'asc';
+        else { state.sort.by = key; state.sort.dir = key === 'part' || key === 'brand' ? 'asc' : 'desc'; }
         state.page.index = 0;
         refresh();
       });
@@ -364,61 +386,25 @@ function setUIFromState() {
 }
 
 function initEvents() {
-  const onChange = debounce(() => {
-    applyFiltersFromUI();
-    state.page.index = 0; // reset to first page on filter change
-    refresh();
-  }, 300);
+  const onChange = debounce(() => { applyFiltersFromUI(); state.page.index = 0; refresh(); }, 300);
 
-  [el.fPart, el.fBrand, el.fRankMin, el.fRankMax, el.fOurMin, el.fOurMax]
-    .forEach(input => {
-      input.addEventListener('input', onChange);
-      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') onChange(); });
-    });
+  [el.fPart, el.fBrand, el.fRankMin, el.fRankMax, el.fOurMin, el.fOurMax].forEach(input => {
+    input.addEventListener('input', onChange);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') onChange(); });
+  });
 
   [el.tCheaper, el.tMissing].forEach(cb => cb.addEventListener('change', onChange));
 
-  el.pageSize.addEventListener('change', () => {
-    const v = parseInt(el.pageSize.value, 10);
-    state.page.size = Number.isFinite(v) ? v : state.page.size;
-    state.page.index = 0;
-    refresh();
-  });
+  el.pageSize.addEventListener('change', () => { const v = parseInt(el.pageSize.value, 10); state.page.size = Number.isFinite(v) ? v : state.page.size; state.page.index = 0; refresh(); });
 
-  el.prevPage.addEventListener('click', () => {
-    if (state.page.index > 0) {
-      state.page.index -= 1;
-      refresh();
-    }
-  });
-  el.nextPage.addEventListener('click', () => {
-    const totalPages = Math.max(1, Math.ceil(state.total / state.page.size));
-    if (state.page.index + 1 < totalPages) {
-      state.page.index += 1;
-      refresh();
-    }
-  });
+  el.prevPage.addEventListener('click', () => { if (state.page.index > 0) { state.page.index -= 1; refresh(); } });
+  el.nextPage.addEventListener('click', () => { const totalPages = Math.max(1, Math.ceil(state.total / state.page.size)); if (state.page.index + 1 < totalPages) { state.page.index += 1; refresh(); } });
 }
 
 function ensureScaffold() {
-  // If the new HTML doesn't include the toolbar/containers, create them dynamically
   let scaffoldCreated = false;
-  if (!el.error) {
-    const banner = document.createElement('div');
-    banner.id = 'errorBanner';
-    banner.style.display = 'none';
-    banner.className = 'error-banner';
-    document.body.prepend(banner);
-    el.error = banner;
-    scaffoldCreated = true;
-  }
-  if (!el.viewer) {
-    const container = document.createElement('div');
-    container.id = 'dbViewer';
-    document.body.appendChild(container);
-    el.viewer = container;
-    scaffoldCreated = true;
-  }
+  if (!el.error) { const banner = document.createElement('div'); banner.id = 'errorBanner'; banner.style.display = 'none'; banner.className = 'error-banner'; document.body.prepend(banner); el.error = banner; scaffoldCreated = true; }
+  if (!el.viewer) { const container = document.createElement('div'); container.id = 'dbViewer'; document.body.appendChild(container); el.viewer = container; scaffoldCreated = true; }
   if (!el.fPart) {
     const wrapper = document.createElement('div');
     wrapper.className = 'db-toolbar';
@@ -448,7 +434,6 @@ function ensureScaffold() {
         <button id="nextPage" type="button">▶</button>
       </div>`;
     (el.viewer?.parentNode || document.body).insertBefore(wrapper, el.viewer || null);
-    // Rebind element refs
     el.fPart = qs('#fPart');
     el.fBrand = qs('#fBrand');
     el.fRankMin = qs('#fRankMin');
@@ -463,18 +448,9 @@ function ensureScaffold() {
     el.pageInfo = qs('#pageInfo');
     scaffoldCreated = true;
   }
-  if (scaffoldCreated) {
-    console.info('[dbv] Scaffold auto-built because expected elements were missing.');
-  }
+  if (scaffoldCreated) console.info('[dbv] Scaffold auto-built because expected elements were missing.');
 }
 
-function boot() {
-  ensureScaffold();
-  restoreUiState();
-  setUIFromState();
-  initEvents();
-  refresh();
-}
+function boot() { ensureScaffold(); restoreUiState(); setUIFromState(); initEvents(); refresh(); }
 
-// Start!
 window.addEventListener('DOMContentLoaded', boot);

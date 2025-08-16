@@ -41,6 +41,33 @@ document.addEventListener('DOMContentLoaded', () => {
   const logsWindow   = document.getElementById('logsWindow');
   const scrollDownBtn = document.getElementById('scrollDownBtn');
 
+  //Progress updates:
+  const progressStats = document.getElementById('progressStats');
+  const statProcessed = document.getElementById('statProcessed');
+  const statElapsed   = document.getElementById('statElapsed');
+  const statEta       = document.getElementById('statEta');
+
+
+  // renderer.js — helper to parse and display the 3-line progress message
+  function updateProgressStats(message) {
+    if (!progressStats || !message) return;
+    // Expect lines like:
+    // "Processed 123 / 999"
+    // "Elapsed 00:01:23"
+    // "ETA 00:04:56"
+    const lines = String(message).split('\n').map(s => s.trim()).filter(Boolean);
+
+    const processed = lines.find(l => /^Processed/i.test(l)) || '';
+    const elapsed   = lines.find(l => /^Elapsed/i.test(l))   || '';
+    const eta       = lines.find(l => /^ETA/i.test(l))       || '';
+
+    if (statProcessed) statProcessed.textContent = processed || 'Обработано —';
+    if (statElapsed)   statElapsed.textContent   = elapsed   || 'Время работы —';
+    if (statEta)       statEta.textContent       = eta       || 'ETA —';
+  }
+
+
+
   // renderer.js — wire up existing "Открыть логи" button (expects #openLogsBtn in HTML)
 
   (function setupOpenLogsButton() {
@@ -222,6 +249,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     startPricesBtn.disabled = true;
     startPricesBtn.textContent = 'Запуск Цен...';
+    // renderer.js — clear stats when a new run starts (inside startPricesBtn click handler, before calling scrape)
+    if (progressStats) {
+      if (statProcessed) statProcessed.textContent = 'Processed —';
+      if (statElapsed)   statElapsed.textContent   = 'Elapsed —';
+      if (statEta)       statEta.textContent       = 'ETA —';
+    }
+
     try {
       const res = await window.electronAPI.scrapePrices(selectedFilePath);
       if (res.error) throw new Error(res.error);
@@ -238,36 +272,6 @@ document.addEventListener('DOMContentLoaded', () => {
     queryPartBtn.addEventListener('click', performSearch);
   }
 
-  // --- DB Tab Buttons ---
-  function displayTableData(data) {
-    createModal(
-      'Database Table Data',
-      `
-        <div class="table-container">
-          <table>
-            <thead>
-              <tr>
-                <th>Part Number</th>
-                <th>Equipment Ref ID</th>
-                <th>Node Path</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${data.map(row => `
-                <tr>
-                  <td>${row.partNumber || 'N/A'}</td>
-                  <td>${row.equipmentRefId || 'N/A'}</td>
-                  <td>${row.nodePath || 'N/A'}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
-        <p class="table-meta">Showing ${data.length} records</p>
-      `
-    );
-  }
-  
   wipeDbBtn.addEventListener('click', async () => {
     if (confirm('Are you sure you want to wipe the database?')) {
       try {
@@ -331,15 +335,14 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // --- Progress Updates ---
-  if (window.electronAPI?.onProgress) window.electronAPI.onProgress(( percent, message ) => {
-    // prices_scraper may send null/undefined percent; guard the UI
-      if (typeof percent === 'number' && isFinite(percent)) {
+  if (window.electronAPI?.onProgress) window.electronAPI.onProgress((percent, message) => {
+    if (typeof percent === 'number' && isFinite(percent)) {
       const p = Math.max(0, Math.min(100, Math.round(percent)));
-        progressBar.style.width = `${p}%`;
-        progressBar.textContent = `${p}%`;
-      } else {
-        // keep bar as-is; expose textual pulse via content if needed
-        progressBar.textContent = message || '';
-      }
-    });
+      progressBar.style.width = `${p}%`;
+      progressBar.textContent = `${p}%`;
+    } else {
+      progressBar.textContent = message || '';
+    }
+    updateProgressStats(message);
+  });
 });

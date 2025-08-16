@@ -5,6 +5,8 @@ const Database = require('better-sqlite3');
 const { DB_PATH } = require('./db_config.js');
 const initDb = require('./init_db');
 
+function nowIso() { return new Date().toISOString(); }
+
 // single shared connection
 let db = null;
 const bus = new EventEmitter();
@@ -24,6 +26,15 @@ function disconnect() {
     try { db.close(); } catch (_) {}
     db = null;
   }
+}
+
+function query(sql, params = []) {
+  console.log(`[${nowIso()}] [ENTRY] query: sql=${typeof sql === 'string' ? sql.slice(0, 200) : '<non-string>'}, paramsLength=${Array.isArray(params) ? params.length : 0}`);
+  const db = connect();
+  const stmt = db.prepare(sql);
+  const res = Array.isArray(params) && params.length ? stmt.all(params) : stmt.all();
+  console.log(`[${nowIso()}] [ENTRY] query: rows=${Array.isArray(res) ? res.length : 0}`);
+  return res;
 }
 
 function checkpoint(truncate = true) {
@@ -362,5 +373,6 @@ module.exports = {
   onDumpProgress,
   generateCsvFiles,
   wipeDatabase,
-  existsPart
+  existsPart,
+  query
 };

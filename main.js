@@ -6,6 +6,7 @@ const path = require('path');
 const fs = require('fs');
 const dbManager = require('./db/db_Manager');
 const {wipeDatabase} = dbManager
+const {query} = dbManager
 const {pbScraper, imagesDir} = require('./scraper/pbScraper');
 //const {data} = require('node-persist');
 
