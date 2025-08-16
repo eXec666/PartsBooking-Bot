@@ -1,0 +1,91 @@
+
+html[data-theme="light"] {
+    color-scheme: light;
+
+    --bg:#ffffff;
+    --text:#0f172a; 
+    --muted:#64748b; 
+    --card:#f8fafc; 
+    --border:#e5e7eb;
+    --brand:#0ea5e9; 
+    --bad:#dc2626; 
+    --good:#16a34a; 
+    --warn:#f59e0b;
+}
+
+html[data-theme="dark"] {
+    color-scheme: dark;
+
+    --bg:#0b0f14; 
+    --text:#e5e7eb; 
+    --muted:#94a3b8; 
+    --card:#0f1720; 
+    --border:#1f2937; 
+}
+
+
+*{ box-sizing:border-box }
+html,body{ height:100% }
+body{ margin:0; font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, 'Noto Sans', 'Apple Color Emoji','Segoe UI Emoji'; background:var(--bg); color:var(--text); }
+
+.wrap{ max-width: 1400px; margin: 0 auto; padding: 16px; }
+h1{ margin: 0 0 12px; font-size: 18px; font-weight: 650; letter-spacing:.2px }
+
+.error-banner{ display:none; margin: 0 0 12px; padding: 10px 12px; border:1px solid color-mix(in oklab, var(--bad) 60%, var(--border)); background: color-mix(in oklab, var(--bad) 12%, transparent); color: var(--text); border-radius: 10px; }
+
+.db-toolbar{ display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:12px; align-items:end; margin: 12px 0 16px; }
+.db-toolbar .field{ display:flex; flex-direction:column; gap:6px }
+.db-toolbar label{ font-size:12px; color:var(--muted); }
+.db-toolbar input[type="text"],
+.db-toolbar input[type="number"],
+.db-toolbar select{ height:34px; padding:6px 10px; border:1px solid var(--border); border-radius:10px; background:var(--card); color:var(--text); outline:none }
+.db-toolbar input:focus,
+.db-toolbar select:focus{ border-color: color-mix(in oklab, var(--brand) 60%, var(--border)); box-shadow:0 0 0 3px color-mix(in oklab, var(--brand) 20%, transparent) }
+
+.db-toolbar .toggles{ display:flex; gap:14px; align-items:center; padding: 4px 0 }
+.db-toolbar .toggles label{ display:flex; gap:8px; align-items:center; }
+
+.pager{ display:flex; gap:10px; align-items:center; justify-content:flex-end }
+.pager button{ height:34px; padding:0 10px; border:1px solid var(--border); background:var(--card); color:var(--text); border-radius:10px; cursor:pointer }
+.pager button:disabled{ opacity:.5; cursor:not-allowed }
+#pageInfo{ min-width: 180px; text-align:center; font-variant-numeric: tabular-nums; color:var(--muted) }
+
+.table{ width:100%; border-collapse:collapse; border-spacing:0; overflow:clip; border:1px solid var(--border); border-radius:14px; background:var(--card) }
+.table th, .table td{ padding:10px 12px; border-bottom:1px solid var(--border); vertical-align:middle }
+.table thead th{ position:sticky; top:0; z-index:1; background:color-mix(in oklab, var(--card) 90%, var(--bg)); text-align:left; font-weight:600; font-size:12px; color:var(--muted) }
+.table tbody tr:hover{ background: color-mix(in oklab, var(--card) 80%, var(--bg)) }
+.table .sortable{ cursor:pointer; user-select:none }
+.table .arrow{ margin-left:6px; opacity:.6 }
+
+code{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 12px; background: color-mix(in oklab, var(--border) 40%, transparent); padding:2px 6px; border-radius:8px }
+
+.delta{ font-variant-numeric: tabular-nums }
+.delta.pos{ color: var(--good) }
+.delta.neg{ color: var(--bad) }
+.delta.neu{ color: var(--muted) }
+
+.empty{ padding: 24px; text-align:center; color: var(--muted) }
+
+/* Theme toggle: PNG icon from same folder as app.css */
+.theme-toggle {
+  appearance: none;
+  width: var(--header-icon);
+  height: var(--header-icon);
+  padding: 0;
+  margin-inline-start: 12px;         /* a bit away from the left of its area */
+  background-color: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-subtle);
+  cursor: pointer;
+}
+/* Default light mode icon */
+.theme-toggle::after {
+  content: '🌙';
+  font-size: 20px;
+}
+/* Dark mode icon */
+html[data-theme="dark"] .theme-toggle::after {
+  content: '🌞';
+}
