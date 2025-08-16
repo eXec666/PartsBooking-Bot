@@ -6,5 +6,4 @@ dist/
 package-lock.json
 data/
 
-# CSV temp results file
-output/
+logs.txt
