@@ -2,8 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const puppeteer = require('puppeteer');
 const ExcelJS = require('exceljs');
 const { app } = require('electron');
 const SUPPORTED_BRANDS = new Set(['JOHN DEERE', 'CLAAS', 'MANITOU']);
@@ -11,29 +10,34 @@ const initDb = require('../db/init_db');
 const dbManager = require('../db/db_Manager');
 const { rankPrice } = dbManager;
 const https = require('https');
-const {HttpsProxyAgent} = require('https-proxy-agent');
-const proxyAgent = new HttpsProxyAgent('http://laxalzhv-rotate:f52gj67mrtp9@p.webshare.io:80');
+const { HttpsProxyAgent } = require('https-proxy-agent');
+const proxyAgent = new HttpsProxyAgent('http://wlmdopbt-rotate:7rtmo8tgu1t2@p.webshare.io:80');
 
+// Verbosity control for noisy per-part logs
+const VERBOSE_LOGS = process.env.VERBOSE === '1';
+const LOG_EVERY = 10; // show 1 of every 10 captures in UI unless VERBOSE=1
+let __captureCounter = 0;
 
-puppeteer.use(StealthPlugin());
+//puppeteer.use(StealthPlugin());
 
 const CONFIG = {
   inputFile: path.join(process.resourcesPath || __dirname, 'prices_input.xlsx'),
   ourSiteCode: 1269,
-  maxPartsToProcess: 0,
-  maxConcurrentInstances: 1, //Math.max(1, Math.floor(os.cpus().length * 0.25)),
+  maxPartsToProcess: 0,                 // 0 = no cap
+  maxConcurrentInstances: 1,            // Math.max(1, Math.floor(os.cpus().length * 0.25)),
   requestThrottleMs: { min: 1500, max: 3000 },
-  navigation: { 
+  navigation: {
     timeout: 60000,
-    waitUntil: 'domcontentloaded' 
+    waitUntil: 'domcontentloaded'
   },
-  apiWaitMs: 10000,
-  imagesDir: path.resolve(process.resourcesPath || __dirname, 'images')
+  apiWaitMs: 60000,
+  imagesDir: path.resolve(process.resourcesPath || __dirname, 'images'),
+  imageDownloadTimeoutMs: 10000
 };
 
 const sleep = ms => new Promise(res => setTimeout(res, ms));
 const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
-const sleepRandom = ({min, max}) => sleep(randInt(min, max));
+const sleepRandom = ({ min, max }) => sleep(randInt(min, max));
 
 let sharedTaskQueue = [];
 function getNextTask() { return sharedTaskQueue.shift() || null; }
@@ -47,6 +51,19 @@ function resolveBrandCode(raw) {
   return null; // not supported
 }
 
+const isType1 = (x) => {
+  const v = x?.art_type_id;
+  if (v == null) return false;
+  const n = typeof v === 'string' ? Number(v.trim()) : Number(v);
+  return n === 1;
+};
+
+const allowBySearchComment = (x) => {
+  const s = x?.sys_info?.search_comment;
+  if (s == null) return true;                 // missing comment ⇒ allow
+  return !String(s).toLowerCase().includes('альметьевск');
+};
+
 function ensureDir(p) {
   if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
 }
@@ -55,36 +72,68 @@ function downloadImage(imageUrl, filePath, referer) {
   return new Promise((resolve, reject) => {
     ensureDir(path.dirname(filePath));
     const file = fs.createWriteStream(filePath);
+    let settled = false;
     let received = 0;
+
+    const cleanup = (err) => {
+      if (settled) return;
+      settled = true;
+      try { file.close(() => {}); } catch {}
+      if (err) {
+        fs.unlink(filePath, () => {});
+        reject(err);
+      } else {
+        resolve({ filePath, bytes: received });
+      }
+    };
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort();
+      cleanup(new Error(`Image download timeout after ${CONFIG.imageDownloadTimeoutMs}ms`));
+    }, CONFIG.imageDownloadTimeoutMs);
 
     const doGet = (urlToGet) => {
       const req = https.get(urlToGet, {
         agent: proxyAgent,
+        signal: controller.signal,
         headers: {
           'User-Agent': 'Mozilla/5.0',
-          'Referer': referer || 'https://partsbooking.ru/'
-        }
+          'Referer': referer || 'https://partsbooking.ru/',
+          'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
+        },
       }, (res) => {
         // handle redirects
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           const nextUrl = new URL(res.headers.location, urlToGet).href;
-          res.resume(); // discard body
+          res.resume();
           return doGet(nextUrl);
         }
         if (res.statusCode !== 200) {
-          file.close(() => fs.unlink(filePath, () => {}));
-          return reject(new Error(`HTTP ${res.statusCode} for ${urlToGet}`));
+          res.resume();
+          return cleanup(new Error(`HTTP ${res.statusCode} for ${urlToGet}`));
         }
-        res.on('data', (chunk) => {received += chunk.length;});
+
+        res.on('data', (chunk) => { received += chunk.length; });
+        res.on('error', (err) => cleanup(err));
         res.pipe(file);
-        file.on('finish', () => file.close(() => resolve({filePath, bytes: received})));
+        file.on('finish', () => {
+          clearTimeout(timer);
+          cleanup(null);
+        });
       });
 
+      req.on('timeout', () => {
+        req.destroy(new Error('request timeout'));
+      });
+      req.setTimeout(CONFIG.imageDownloadTimeoutMs);
+
       req.on('error', (err) => {
-        file.close(() => fs.unlink(filePath, () => {}));
-        reject(err);
+        clearTimeout(timer);
+        cleanup(err);
       });
     };
+
     doGet(imageUrl);
   });
 }
@@ -93,11 +142,16 @@ async function navigateWithRetries(page, url, navOpts, attempts = 3) {
   let lastErr = null;
   for (let i = 1; i <= attempts; i++) {
     try {
-      const resp = await page.goto(url, navOpts);
+      const resp = await page.goto(url, { ...navOpts });
       const status = resp ? resp.status() : 0;
       // Retry on 429 or 5xx, or when no response object is returned
       if (!resp || status === 429 || status >= 500) {
         throw new Error(`Bad nav status: ${status || 'no-response'}`);
+      }
+      const final = new URL(page.url());
+      const expected = new URL(url);
+      if (final.origin !== expected.origin) {
+        throw new Error(`unexpected cross-origin redirect: ${final.href}`);
       }
       return resp;
     } catch (e) {
@@ -113,8 +167,6 @@ async function navigateWithRetries(page, url, navOpts, attempts = 3) {
   }
   throw lastErr || new Error('navigateWithRetries failed');
 }
-
-
 
 class ParallelScraper {
   constructor(instanceId) {
@@ -145,12 +197,18 @@ class ParallelScraper {
         '--disable-gpu',
         '--no-first-run',
         '--no-zygote',
-        '--single-process',
         '--disable-extensions',
         '--proxy-server=http://p.webshare.io:80'
       ];
 
       const workerDataDir = path.join(app.getPath('userData'), `puppeteer_worker_${this.instanceId}`);
+
+      if (!Array.isArray(launchArgs) || launchArgs.some(a => typeof a !== 'string')) {
+        throw new Error('launchArgs must be strings only: ' + JSON.stringify(launchArgs.map(a => typeof a)));
+      }
+      if (typeof workerDataDir !== 'string' || workerDataDir.length === 0) {
+        throw new Error('Invalid userDataDir computed from app.getPath("userData")');
+      }
 
       this.browser = await puppeteer.launch({
         headless: false,
@@ -162,205 +220,285 @@ class ParallelScraper {
 
       this.page = await this.browser.newPage();
       await this.page.authenticate({
-        username: 'laxalzhv-rotate',
-        password: 'f52gj67mrtp9'
+        username: 'wlmdopbt-rotate',
+        password: '7rtmo8tgu1t2'
       });
-      await this.page.setViewport({ width: 1280, height: 800 });
-      await this.page.setUserAgent(
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36'
-      );
-      await this.page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8' });
-      await this.page.setRequestInterception(true);
-      this.page.on('request', (req) => {
-        const type = req.resourceType();
-        const url  = req.url();
+      await this.page.setCacheEnabled(false);
+      await this.page.evaluateOnNewDocument(() => {
+        try {
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister())).catch(()=>{});
+          }
+          if (typeof caches !== 'undefined' && caches.keys) {
+            caches.keys().then(keys => keys.forEach(k => caches.delete(k))).catch(()=>{});
+          }
+        } catch {}
+      });
 
-        // block heavy/irrelevant
-        if (type === 'image' || type === 'stylesheet' || type === 'font' || type === 'media') return req.abort();
+      await this.page.setViewport({ width: 1280, height: 800 });
+      const realUA = await this.browser.userAgent();
+      await this.page.setUserAgent(realUA);
+
+      await this.page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8' });
+
+      // global request interceptor (kept for the lifetime of the page)
+      this._intercept = (req) => {
+        const type = req.resourceType();
+        const url = req.url();
+
+        if (type === 'stylesheet') {
+          return req.respond({ status: 200, contentType: 'text/css', body: '/* stripped */' });
+        }
+        if (type === 'font' || type === 'image' || type === 'media') return req.abort();
         if (type === 'script' && /analytics|gtag|google-analytics|yandex|metrika|hotjar|tracker/i.test(url)) return req.abort();
 
-        // allow core (HTML, XHR/fetch, document JS)
         return req.continue();
-      });
+      };
+
+      await this.page.setRequestInterception(true);
+      this.page.on('request', this._intercept);
+
     } catch (e) {
       console.error(`[worker ${this.instanceId}] puppeteer launch failed: ${e.message}`);
+      console.error(e && e.stack);
       throw e;
     }
   }
 
-  
-
   buildProductUrl(brandName, partNumber) {
-  const brandCode = resolveBrandCode(brandName);
-  if (!brandCode) return null; // caller will handle skipping
-  const part = encodeURIComponent(String(partNumber).trim());
-  return `https://partsbooking.ru/products/${brandCode}/${part}.html`;
-}
+    const brandCode = resolveBrandCode(brandName);
+    if (!brandCode) return null; // caller will handle skipping
+    const part = encodeURIComponent(String(partNumber).trim());
+    return `https://partsbooking.ru/products/${brandCode}/${part}.html`;
+  }
 
   async processTask(task) {
-  const { brandName, partNumber } = task;
-  try {
-    const brandCode = resolveBrandCode(brandName);
-    if (!brandCode) {
-      console.warn(`[worker ${this.instanceId}] Skipping unsupported brand "${brandName}" for part ${partNumber}`);
-      return {ok: false, error: 'Unsupported brand', partNumber, brandName };
-    }
-
-    const productUrl = this.buildProductUrl(brandName, partNumber);
-    console.log(`[worker ${this.instanceId}] Navigating to: ${productUrl}`);
-
-    let priceItems = null;
-    let bytesIn = 0;
-
-    const isType1 = (item) => {
-        // art_type_id can arrive as number or string; normalize
-        const v = item?.art_type_id;
-        if (v == null) return false;
-        const n = typeof v === 'string' ? Number(v.trim()) : Number(v);
-        return n === 1;
-      };
-    
-    const allowBySearchComment = (x) => {
-    const s = x?.sys_info?.search_comment;
-    if (s == null) return true;                 // missing comment ⇒ allow
-    return !String(s).toLowerCase().includes('альметьевск');
-  };
-
-    
-    this.page.on('response', async (response) => {
-    const url = response.url();
-
-  // count incoming bytes when server provides Content-Length
-  try {
-    const headers = response.headers();
-    const len = parseInt(headers['content-length'] || '0', 10);
-    if (!Number.isNaN(len) && len > 0) bytesIn += len;
-  } catch (_) { /* ignore header parsing errors */ }
-
-  if (url.includes('/price_search/search')) {
+    const { brandName, partNumber } = task;
     try {
-      const json = await response.json();
-      if (json && json.price_items) {
-        priceItems = json.price_items;
-        // backfill size if Content-Length was missing
-        try {
-          const approx = Buffer.byteLength(JSON.stringify(json), 'utf8');
-          if (approx > 0) bytesIn += approx;
-        } catch (_) { /* ignore size calc errors */ }
-        console.log(`[worker ${this.instanceId}] Captured ${priceItems.length} price items for ${partNumber}`);
+      const brandCode = resolveBrandCode(brandName);
+      if (!brandCode) {
+        console.warn(`[worker ${this.instanceId}] Skipping unsupported brand "${brandName}" for part ${partNumber}`);
+        return { ok: false, error: 'Unsupported brand', partNumber, brandName };
       }
-    } catch (err) {
-      console.error(`[worker ${this.instanceId}] Failed to parse price_search JSON: ${err.message}`);
-    }
-  }
-});
 
-    await navigateWithRetries(this.page, productUrl, CONFIG.navigation, 3);
-    const apiResp = await this.page
-  .waitForResponse(r => r.url().includes('/price_search/search'), { timeout: CONFIG.apiWaitMs })
-  .catch(() => null);
-
-// safety: if the response listener hasn’t set priceItems yet, parse here too
-if (apiResp && !priceItems) {
-  try {
-    const json = await apiResp.json();
-    if (json && json.price_items) priceItems = json.price_items;
-  } catch {}
-}
-
-if (!priceItems) {
-  console.warn(
-    `[worker ${this.instanceId}] No price_items found for ${partNumber} after initial wait of ${CONFIG.apiWaitMs}ms. Retrying...`
-  );
-
-  // brief pause before retry
-  await sleep(randInt(400, 900));
-
-  const apiResp2 = await this.page
-    .waitForResponse(r => r.url().includes('/price_search/search'), { timeout: Math.floor(CONFIG.apiWaitMs / 2) })
-    .catch(() => null);
-
-  if (apiResp2 && !priceItems) {
-    try {
-      const j = await apiResp2.json();
-      if (j && j.price_items) {
-        priceItems = j.price_items;
-        console.log(
-          `[worker ${this.instanceId}] Captured ${priceItems.length} price items for ${partNumber} on second attempt`
-        );
-      }
-    } catch {
-      // ignore JSON parse errors
-    }
-  }
-
-  // still nothing after retry
-  if (!priceItems) {
-    console.warn(
-      `[worker ${this.instanceId}] No price_items found for ${partNumber} after total wait of ${CONFIG.apiWaitMs + Math.floor(CONFIG.apiWaitMs / 2)}ms`
-    );
-    console.log(
-      `[worker ${this.instanceId}] [${partNumber}] total bandwidth used: ${bytesIn} bytes`
-    );
-    return { ok: false, error: 'No price_items', partNumber };
-  }
-}
-    
-
-    const imgRel = (priceItems || []).find(x => x?.sys_info?.goods_img_url)?.sys_info?.goods_img_url;
-    if (imgRel) {
+      // Skip if this (part_number, brand_name) already exists in DB
       try {
-        const imgUrl = new URL(imgRel, 'https://partsbooking.ru').href;
-        const brandSafe = String(brandName || '').trim().replace(/[^\w\-]+/g, '_');
-        const partSafe  = String(partNumber || '').trim().replace(/[^\w\-]+/g, '_');
-        const ext       = path.extname(imgUrl) || '.jpg';
-        const outDir    = path.join(CONFIG.imagesDir, brandSafe);
-        const outFile   = path.join(outDir, `${partSafe}${ext}`);
-        await downloadImage(imgUrl, outFile, productUrl);
-        console.log(`[worker ${this.instanceId}] Image saved: ${outFile}`);
-      } catch (e) {
-        console.warn(`[worker ${this.instanceId}] Image download failed for ${partNumber}: ${e.message}`);
-      }
-    } else {
-      console.log(`[worker ${this.instanceId}] No image URL for ${partNumber}`);
-    }
-
-    const slag = priceItems
-      .filter(isType1)
-      .filter(allowBySearchComment)
-      .map(x => {
-        const pid = x?.price_id ?? x?.id ?? null;
-        const c = x?.cost ?? x?.price ?? null;
-        if (pid != null && c != null) {
-          console.log(`[worker ${this.instanceId}] Picked fields for ${partNumber}: price_id=${pid}, cost=${c}`);
+        if (dbManager.existsPart(partNumber, brandName)) {
+          console.log(`[worker ${this.instanceId}] SKIP existing ${brandName} ${partNumber}`);
+          return { ok: true, skipped: true, partNumber, brandName };
         }
-        return [pid, c];
-      })
-      .filter(p => p[0] != null && p[1] != null);
-
-    console.log(`[worker ${this.instanceId}] Total picked for ${partNumber}: ${slag.length}`);
-
-    const ranked = rankPrice(slag, CONFIG.ourSiteCode, partNumber, brandName);
-
-    this.results.push(ranked);
-    this.buffer.push(ranked);
-
-    if (this.buffer.length >= 10) {
-      try {
-        dbManager.dumpToDb('prices', this.buffer);
-      } finally {
-        this.buffer = [];
+      } catch (e) {
+        console.warn(`[worker ${this.instanceId}] existsPart check failed: ${e.message}`);
       }
+
+      const productUrl = this.buildProductUrl(brandName, partNumber);
+      console.log(`[worker ${this.instanceId}] Navigating to: ${productUrl}`);
+
+      let priceItems = null;
+      let bytesIn = 0;
+
+      let sawPriceRequest = false;
+      let priceReqFailures = [];
+      const isPriceSearch = (u) => u.includes('/price_search/');
+
+      // task-scoped listeners — define once per task
+      const onReq = (r) => {
+        const u = r.url();
+        if (isPriceSearch(u)) {
+          sawPriceRequest = true;
+          console.log(`[worker ${this.instanceId}] price_search request: ${r.method()} ${u}`);
+        }
+      };
+
+      const onReqFinished = (r) => {
+        const u = r.url();
+        if (isPriceSearch(u)) {
+          console.log(`[worker ${this.instanceId}] price_search finished: ${r.resourceType()} ${u}`);
+        }
+      };
+
+      const onReqFailed = (r) => {
+        const u = r.url();
+        if (isPriceSearch(u)) {
+          const failure = r.failure() ? r.failure().errorText : null;
+          priceReqFailures.push(failure || 'unknown');
+          console.warn(`[worker ${this.instanceId}] price_search failed: ${failure} ${u}`);
+        }
+      };
+
+      const onResp = async (response) => {
+        const url = response.url();
+        if (!url.includes('/price_search/search')) return;
+
+        // identify preflights / non-JSON / non-2xx
+        let method = '';
+        try {
+          const req = typeof response.request === 'function' ? response.request() : null;
+          method = req && typeof req.method === 'function' ? req.method() : '';
+        } catch {}
+
+        let status = 0;
+        try { status = typeof response.status === 'function' ? response.status() : 0; } catch {}
+
+        let headers = {};
+        try { headers = typeof response.headers === 'function' ? response.headers() : {}; } catch {}
+
+        const ct = String(headers['content-type'] || headers['Content-Type'] || '').toLowerCase();
+
+        if (method === 'OPTIONS' || status < 200 || status >= 300 || !ct.includes('application/json')) {
+          // ignore preflights, errors, and non-JSON bodies
+          return;
+        }
+
+        // count incoming bytes when Content-Length is present
+        try {
+          const len = parseInt(headers['content-length'] || headers['Content-Length'] || '0', 10);
+          if (!Number.isNaN(len) && len > 0) bytesIn += len;
+        } catch {}
+
+        try {
+          const json = await response.json();
+          if (json && json.price_items) {
+            priceItems = json.price_items;
+            // backfill size if no Content-Length
+            try {
+              if (!(headers['content-length'] || headers['Content-Length'])) {
+                const approx = Buffer.byteLength(JSON.stringify(json), 'utf8');
+                if (approx > 0) bytesIn += approx;
+              }
+            } catch {}
+            __captureCounter++;
+            if (VERBOSE_LOGS || (__captureCounter % LOG_EVERY === 0)) {
+              console.log(`[worker ${this.instanceId}] Captured ${priceItems.length} price items for ${partNumber}`);
+            }
+          }
+        } catch (err) {
+          // downgrade noise from “no body” cases
+          console.warn(`[worker ${this.instanceId}] Skipped non-body /price_search response: ${err.message}`);
+        }
+      };
+
+      if (this.page) {
+        this.page.on('request', onReq);
+        this.page.on('requestfinished', onReqFinished);
+        this.page.on('requestfailed', onReqFailed);
+        this.page.on('response', onResp);
+      }
+
+      await navigateWithRetries(this.page, productUrl, CONFIG.navigation, 3);
+      const apiResp = await this.page
+        .waitForResponse(r => r.url().includes('/price_search/search'), { timeout: CONFIG.apiWaitMs })
+        .catch(() => null);
+
+      // safety: if the response listener hasn’t set priceItems yet, parse here too
+      if (apiResp && !priceItems) {
+        try {
+          const json = await apiResp.json();
+          if (json && json.price_items) priceItems = json.price_items;
+        } catch {}
+      }
+
+      if (!priceItems) {
+        console.warn(
+          `[worker ${this.instanceId}] No price_items found for ${partNumber} after initial wait of ${CONFIG.apiWaitMs}ms. Retrying...`
+        );
+
+        // brief pause before retry
+        await sleep(randInt(400, 900));
+
+        const apiResp2 = await this.page
+          .waitForResponse(r => r.url().includes('/price_search/search'), { timeout: Math.floor(CONFIG.apiWaitMs / 2) })
+          .catch(() => null);
+
+        if (apiResp2 && !priceItems) {
+          try {
+            const j = await apiResp2.json();
+            if (j && j.price_items) {
+              priceItems = j.price_items;
+              console.log(
+                `[worker ${this.instanceId}] Captured ${priceItems.length} price items for ${partNumber} on second attempt`
+              );
+            }
+          } catch {
+            // ignore JSON parse errors
+          }
+        }
+
+        // still nothing after retry
+        if (!priceItems) {
+          console.warn(
+            `[worker ${this.instanceId}] No price_items found for ${partNumber} after total wait of ${CONFIG.apiWaitMs + Math.floor(CONFIG.apiWaitMs / 2)}ms`
+          );
+          console.log(
+            `[worker ${this.instanceId}] [${partNumber}] total bandwidth used: ${bytesIn} bytes`
+          );
+          return { ok: false, error: 'No price_items', partNumber };
+        }
+      }
+
+      const imgRel = (priceItems || []).find(x => x?.sys_info?.goods_img_url)?.sys_info?.goods_img_url;
+      if (imgRel) {
+        try {
+          const imgUrl = new URL(imgRel, 'https://partsbooking.ru').href;
+          const brandSafe = String(brandName || '').trim().replace(/[^\w\-]+/g, '_');
+          const partSafe = String(partNumber || '').trim().replace(/[^\w\-]+/g, '_');
+          const ext = path.extname(imgUrl) || '.jpg';
+          const outDir = path.join(CONFIG.imagesDir, brandSafe);
+          const outFile = path.join(outDir, `${partSafe}${ext}`);
+          await downloadImage(imgUrl, outFile, productUrl);
+          console.log(`[worker ${this.instanceId}] Image saved: ${outFile}`);
+        } catch (e) {
+          console.warn(`[worker ${this.instanceId}] Image download failed for ${partNumber}: ${e.message}`);
+        }
+      } else {
+        console.log(`[worker ${this.instanceId}] No image URL for ${partNumber}`);
+      }
+
+
+      const logPriceArray = [];
+      const slag = priceItems
+        .filter(isType1)
+        .filter(allowBySearchComment)
+        .map(x => {
+          const pid = x?.price_id ?? x?.id ?? null;
+          const c = x?.cost ?? x?.price ?? null;
+          if (pid != null && c != null) {
+            logPriceArray.push(`price_id = ${pid}, cost = ${c}`);
+          }
+          return [pid, c];
+        })
+        .filter(p => p[0] != null && p[1] != null);
+
+      console.log(`[worker ${this.instanceId}] Total picked for ${partNumber}: ${slag.length}`);
+      var i = null;
+      for(i = 0; i < logPriceArray.length; i++)  {
+        console.log(`${i}: ${logPriceArray[i]}`)
+      }
+
+      const ranked = rankPrice(slag, CONFIG.ourSiteCode, partNumber, brandName);
+
+      this.results.push(ranked);
+      this.buffer.push(ranked);
+
+      if (this.buffer.length >= 10) {
+        try {
+          dbManager.dumpToDb('prices', this.buffer);
+        } finally {
+          this.buffer = [];
+        }
+      }
+      console.log(`[worker ${this.instanceId}] [${partNumber}] total bandwidth used: ${bytesIn} bytes`);
+      return { ok: true, count: slag.length, partNumber };
+    } catch (err) {
+      console.error(`[worker ${this.instanceId}] task ${partNumber} failed: ${err.message}`);
+      return { ok: false, error: err.message, partNumber };
+    } finally {
+      try { this.page.off('request', onReq); } catch {}
+      try { this.page.off('requestfinished', onReqFinished); } catch {}
+      try { this.page.off('requestfailed', onReqFailed); } catch {}
+      try { this.page.off('response', onResp); } catch {}
     }
-    console.log(`[worker ${this.instanceId}] [${partNumber}] total bandwidth used: ${bytesIn} bytes`);
-    return { ok: true, count: slag.length, partNumber };
-  } catch (err) {
-    console.error(`[worker ${this.instanceId}] task ${partNumber} failed: ${err.message}`);
-    return { ok: false, error: err.message, partNumber };
-  } finally {
-    this.page.removeAllListeners('response');
   }
-}
 
   async workerLoop(progressCallback) {
     while (true) {
@@ -388,6 +526,7 @@ const api = {
     const tick = () => progressCallback(null, `Processed ${++tickCount}`);
 
     try {
+      if (!app.isReady()) await app.whenReady();
       const ok = await initDb();
       if (!ok) throw new Error('DB init failed');
 
@@ -399,30 +538,75 @@ const api = {
       const ws = workbook.getWorksheet(1);
       if (!ws) throw new Error('Worksheet 1 is missing');
 
+      // --- Robust header/column detection and task build ---
+      function cellText(v) {
+        if (v == null) return '';
+        if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return String(v);
+        if (v && typeof v === 'object') {
+          if (Array.isArray(v.richText)) return v.richText.map(rt => rt.text || '').join('');
+          if (v.text) return String(v.text);
+          if (v.hyperlink && v.text) return String(v.text);
+          if (v.result != null) return cellText(v.result);
+          if (v.sharedFormula && v.result != null) return cellText(v.result);
+        }
+        return String(v);
+      }
+      function norm(s) { return String(s || '').trim().toLowerCase(); }
+
+      const PART_HEADERS = new Set(['артикул', 'арт', 'part', 'part number', 'номер детали', 'код товара', 'pn', 'sku', 'код']);
+      const BRAND_HEADERS = new Set(['бренд', 'брэнд', 'brand', 'марка', 'производитель', 'oem']);
+
+      let headerRowIdx = 1;
       let colPart = 1;
       let colBrand = 2;
-      const headerRow = ws.getRow(1);
-      if (headerRow) {
-        headerRow.eachCell((cell, colNumber) => {
-          const v = (cell && cell.value ? String(cell.value) : '').trim();
-          if (v === 'Артикул') colPart = colNumber;
-          if (v === 'Брэнд') colBrand = colNumber;
-        });
+
+      const scanRows = Math.min(10, ws.rowCount || 10);
+      outer:
+      for (let r = 1; r <= scanRows; r++) {
+        const row = ws.getRow(r);
+        let p = 0, b = 0;
+        for (let c = 1; c <= row.cellCount; c++) {
+          const val = norm(cellText(row.getCell(c).value));
+          if (!val) continue;
+          if (PART_HEADERS.has(val)) { colPart = c; p = c; }
+          if (BRAND_HEADERS.has(val)) { colBrand = c; b = c; }
+        }
+        if (p && b) { headerRowIdx = r; break outer; }
       }
+      console.log(`[pbScraper] Header row=${headerRowIdx} colPart=${colPart} colBrand=${colBrand}`);
 
       const tasks = [];
       ws.eachRow((row, rowNumber) => {
-        if (rowNumber === 1) return;
-        const partCell = row.getCell(colPart).value;
-        const brandCell = row.getCell(colBrand).value;
-        if (partCell == null || brandCell == null) return;
+        if (rowNumber <= headerRowIdx) return;
+        const partCell = cellText(row.getCell(colPart).value);
+        const brandCell = cellText(row.getCell(colBrand).value);
         const partNumber = String(partCell).trim();
         const brandName = String(brandCell).trim();
-        if (!partNumber) return;
+        if (!partNumber || !brandName) return;
         tasks.push({ brandName, partNumber });
       });
+      console.log(`[pbScraper] Parsed tasks: ${tasks.length}`);
 
-      const finalTasks = CONFIG.maxPartsToProcess > 0 ? tasks.slice(0, CONFIG.maxPartsToProcess) : tasks;
+      // Prefilter by DB existence, then optionally cap. 0 = no cap.
+      let skippedExisting = 0;
+      let filtered = tasks;
+      try {
+        filtered = tasks.filter(t => {
+          const exists = dbManager.existsPart(t.partNumber, t.brandName);
+          if (exists) skippedExisting++;
+          return !exists;
+        });
+      } catch (e) {
+        console.warn(`[pbScraper] existsPart prefilter disabled: ${e.message}`);
+        filtered = tasks; // fail-open
+      }
+
+      const finalTasks =
+        (CONFIG.maxPartsToProcess && CONFIG.maxPartsToProcess > 0)
+          ? filtered.slice(0, CONFIG.maxPartsToProcess)
+          : filtered;
+
+      console.log(`[pbScraper] Existing rows skipped: ${skippedExisting} / ${tasks.length}`);
       sharedTaskQueue = [...finalTasks];
       if (finalTasks.length === 0) return [];
 
@@ -458,7 +642,7 @@ const api = {
       isScraping = false;
     }
   },
-  imagesDir : CONFIG.imagesDir
+  imagesDir: CONFIG.imagesDir
 };
 
 api.pbScraper = api;

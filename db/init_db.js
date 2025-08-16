@@ -11,14 +11,14 @@ module.exports = function initDb() {
   db.prepare(`CREATE TABLE IF NOT EXISTS prices (
     part_number TEXT,
     brand_name TEXT,
-    rank_pos INTEGER,
-    our_price REAL,
+    rank_pos TEXT,
+    our_price TEXT,
     leader_code TEXT,
-    leader_price REAL,
+    leader_price TEXT,
     over_code TEXT,
-    over_price REAL,
+    over_price TEXT,
     under_code TEXT,
-    under_price REAL,
+    under_price TEXT,
     PRIMARY KEY(part_number, brand_name)
   )`).run();
 

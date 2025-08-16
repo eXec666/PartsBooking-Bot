@@ -185,6 +185,10 @@ function rankPrice(slag, ourCode, partNumber, brandName) {
     out.under_price = under[1];
   }
 
+  if (out.rank_pos == null) {
+    out.rank_pos = "Not listed";
+  }
+
   return out;
 }
 
@@ -204,7 +208,7 @@ function dumpToDb(tableName, rows) {
   const dbc = connect();
 
   const insert = dbc.prepare(`
-    INSERT OR REPLACE INTO prices
+    INSERT OR IGNORE INTO prices
       (part_number, brand_name, rank_pos, our_price,
        leader_code, leader_price, over_code, over_price, under_code, under_price)
     VALUES (@part_number, @brand_name, @rank_pos, @our_price,
@@ -224,6 +228,23 @@ function dumpToDb(tableName, rows) {
 
 function onDumpProgress(handler) {
   bus.on('dump-progress', handler);
+}
+
+// fast existence check on PRIMARY KEY(part_number, brand_name)
+let __existsStmt = null;
+/**
+ * Return true if a (part_number, brand_name) row already exists.
+ * @param {string} partNumber
+ * @param {string} brandName
+ */
+function existsPart(partNumber, brandName) {
+  const dbc = connect();
+  if (!__existsStmt) {
+    __existsStmt = dbc.prepare(
+      'SELECT 1 FROM prices WHERE part_number = ? AND brand_name = ? LIMIT 1'
+    );
+  }
+  return !!__existsStmt.get(partNumber, brandName);
 }
 
 // --- CSV EXPORT ---
@@ -325,5 +346,6 @@ module.exports = {
   rankPrice,
   onDumpProgress,
   generateCsvFiles,
-  wipeDatabase
+  wipeDatabase,
+  existsPart
 };
