@@ -297,34 +297,47 @@ class ParallelScraper {
       let priceItems = null;
       let bytesIn = 0;
 
-      let sawPriceRequest = false;
-      let priceReqFailures = [];
-      const isPriceSearch = (u) => u.includes('/price_search/');
+          let sawPriceRequest = false;
+    let priceReqFailures = [];
+    const isPriceSearch = (u) => u.includes('/price_search/');
 
-      // task-scoped listeners — define once per task
-      const onReq = (r) => {
-        const u = r.url();
-        if (isPriceSearch(u)) {
-          sawPriceRequest = true;
-          console.log(`[worker ${this.instanceId}] price_search request: ${r.method()} ${u}`);
-        }
-      };
+    // only-once gating
+    let loggedPriceSearchStart = false;
+    let loggedPriceSearchFinish = false;
+    let firstPriceSearchUrl = null;
 
-      const onReqFinished = (r) => {
-        const u = r.url();
-        if (isPriceSearch(u)) {
-          console.log(`[worker ${this.instanceId}] price_search finished: ${r.resourceType()} ${u}`);
-        }
-      };
+    // task-scoped listeners — define once per task
+    const onReq = (r) => {
+      const u = r.url();
+      const method = (typeof r.method === 'function') ? r.method() : '';
+      if (isPriceSearch(u) && method !== 'OPTIONS' && !loggedPriceSearchStart) {
+        sawPriceRequest = true;
+        loggedPriceSearchStart = true;
+        firstPriceSearchUrl = u;
+        console.log(`[worker ${this.instanceId}] price_search request: ${method} ${u}`);
+      }
+    };
 
-      const onReqFailed = (r) => {
-        const u = r.url();
-        if (isPriceSearch(u)) {
-          const failure = r.failure() ? r.failure().errorText : null;
-          priceReqFailures.push(failure || 'unknown');
-          console.warn(`[worker ${this.instanceId}] price_search failed: ${failure} ${u}`);
-        }
-      };
+    const onReqFinished = (r) => {
+      const u = r.url();
+      const method = (typeof r.method === 'function') ? r.method() : '';
+      if (isPriceSearch(u) && method !== 'OPTIONS'
+          && !loggedPriceSearchFinish
+          && (!firstPriceSearchUrl || u === firstPriceSearchUrl)) {
+        loggedPriceSearchFinish = true;
+        console.log(`[worker ${this.instanceId}] price_search finished: ${r.resourceType()} ${u}`);
+      }
+    };
+
+    const onReqFailed = (r) => {
+      const u = r.url();
+      if (isPriceSearch(u)) {
+        const failure = r.failure() ? r.failure().errorText : null;
+        priceReqFailures.push(failure || 'unknown');
+        console.warn(`[worker ${this.instanceId}] price_search failed: ${failure} ${u}`);
+      }
+    };
+
 
       const onResp = async (response) => {
         const url = response.url();
