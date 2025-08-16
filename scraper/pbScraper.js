@@ -535,9 +535,6 @@ const api = {
     if (isScraping) return { message: 'Scraping is already in progress.' };
     isScraping = true;
 
-    let tickCount = 0;
-    const tick = () => progressCallback(null, `Processed ${++tickCount}`);
-
     try {
       if (!app.isReady()) await app.whenReady();
       const ok = await initDb();
@@ -630,8 +627,45 @@ const api = {
         await w.initialize();
         workers.push(w);
       }
+      
+      // Guard: nothing to do
+      const totalCount = finalTasks.length;
+      if (totalCount === 0) {
+        progressCallback(100, 'No tasks to process | Elapsed 00:00:00 | ETA 00:00:00');
+        return [];
+      }
+
+      let processed = 0;
+      const startTime = Date.now();
+
+      const formatHMS = (ms) => {
+        const t = Math.max(0, Math.floor(ms / 1000));
+        const h = Math.floor(t / 3600);
+        const m = Math.floor((t % 3600) / 60);
+        const s = t % 60;
+        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+      };
+
+      const tick = () => {
+        processed += 1;
+        const elapsed = Date.now() - startTime;
+        const percent = Math.round((processed / totalCount) * 100);
+        const remaining = Math.max(0, totalCount - processed);
+        const etaMs = processed ? Math.round((elapsed / processed) * remaining) : 0;
+        progressCallback( percent,
+          `Processed ${processed} / ${totalCount}
+          Elapsed ${formatHMS(elapsed)}
+          ETA ${processed ? formatHMS(etaMs) : 'unknown'}`
+        );
+      };
 
       await Promise.all(workers.map(w => w.workerLoop(tick)));
+
+      const totalElapsed = Date.now() - startTime;
+      progressCallback(100, 
+        `Processed ${processed} / ${totalCount} 
+        Elapsed ${formatHMS(totalElapsed)}
+        ETA 00:00:00`);
 
       for (const w of workers) {
         if (w.buffer && w.buffer.length) {

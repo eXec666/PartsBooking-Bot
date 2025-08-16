@@ -163,17 +163,27 @@ function rankPrice(slag, ourCode, partNumber, brandName) {
   const leader = normalized.find(x => x[2] === 1);
   const over   = normalized.find(x => x[2] === (out.rank_pos ?? 0) - 1);
   const under  = normalized.find(x => x[2] === (out.rank_pos ?? 0) + 1);
+  const last = normalized.find(x => x[2] === normalized.length && normalized.length != 1);
+  
 
   const weAreLeader = leader && leader[0] === String(ourCode);
+  const weAreLast = last && last[0] === String(ourCode);
 
   if (weAreLeader) {
-    out.leader_code  = 'G&G Leader';
+    out.leader_code  = 'G&G Лидер';
     out.leader_price = out.our_price;
-    out.over_code    = 'G&G Leader';
-    out.over_price   = null;
+    out.over_code    = 'G&G Лидер';
+    out.over_price   = 'G&G Лидер';
   } else if (leader) {
     out.leader_code  = leader[0];
     out.leader_price = leader[1];
+  }
+
+
+
+  if (weAreLast) {
+    out.under_code = "G&G Последний";
+    out.under_price = "G&G Последний";
   }
 
   if (over) {
@@ -186,7 +196,12 @@ function rankPrice(slag, ourCode, partNumber, brandName) {
   }
 
   if (out.rank_pos == null) {
-    out.rank_pos = "Not listed";
+    out.rank_pos = "Нет листинга";
+    out.our_price = "Нет листинга";
+    out.over_code = "Нет листинга";
+    out.over_price = "Нет листинга";
+    out.under_code = "Нет листинга";
+    out.under_price = "Нет листинга";
   }
 
   return out;

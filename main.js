@@ -206,19 +206,22 @@ ipcMain.handle('scrape-prices', async (event, inputFilePath) => {
     }
 
     console.log('🔌 Starting scraping...');
-    const result = await pbScraper.runWithProgress(
-      (percent, message) => {
-        console.log(`📦 Progress: ${percent}% - ${message}`);
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('progress-update', percent, message);
-        }
-      },
-      () => {
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('force-refresh');
-        }
-      },
-      inputFilePath
+    const result = await pbScraper.runWithProgress((percent, message) => {
+          try {
+            console.log(`Progress: ${percent}% - ${message}`);
+            if (win && !win.isDestroyed()) {
+              win.webContents.send('progress-update', percent, message);
+            }
+          } catch (progressErr) {
+            console.error('Progress callback failed:', progressErr);
+          }
+        },
+        () => {
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('force-refresh');
+          }
+        },
+        inputFilePath
     );
 
     console.log('Price scrape completed:', result);
