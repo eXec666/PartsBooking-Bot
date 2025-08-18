@@ -49,11 +49,9 @@ function initLogFilePath() {
   const userDir = app.getPath('userData');        // e.g. C:\Users\<you>\AppData\Roaming\PartsBooking
   // Ensure the directory exists (userData itself exists, but mkdirSync is harmless if it already does)
   fs.mkdirSync(userDir, { recursive: true });
-  LOG_FILE = path.join(LOG_FILE);
+  LOG_FILE = path.join(userDir, 'logs.txt');
 }
 
-
-fs.writeFileSync(LOG_FILE, '');
 function enqueueWrite(entry) {
   try {
     writeQueue.push(JSON.stringify(entry) + os.EOL);
@@ -78,7 +76,7 @@ function flushWriteQueue() {
   writeQueue = [];
   writeTimer = null;
 
-  ensureLogWrite(LOG_FILE, payload, (err) => {
+  ensureLogWrite(payload, (err) => {
     if (err) {
       // Surface a synthetic error into the stream (not to disk to avoid loops)
       broadcastAppend({ ts: Date.now(), level: 'error', msg: `Log write failed: ${err.message}`, source: 'main' });
@@ -93,20 +91,19 @@ function flushWriteQueue() {
 }
 
 function rotateLogs() {
+  const dir = path.dirname(LOG_FILE);
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const rotated = join(LOG_DIR, `log-${stamp}.txt`);
+  const rotated = join(dir, `log-${stamp}.txt`);
+  try { renameSync(LOG_FILE, rotated); } catch {}
   try {
-    renameSync(LOG_FILE, rotated);
-  } catch {}
-  // trim old files
-  try {
-    const files = readdirSync(LOG_DIR)
+    const files = readdirSync(dir)
       .filter(f => /^log-\d{4}-\d{2}-\d{2}T/.test(f))
-      .sort() // ISO names sort chronologically
+      .sort()
       .reverse();
-    files.slice(ROTATE_KEEP).forEach(f => { try { unlinkSync(join(LOG_DIR, f)); } catch {} });
+    files.slice(ROTATE_KEEP).forEach(f => { try { unlinkSync(join(dir, f)); } catch {} });
   } catch {}
 }
+
 
 function normalizeEntry(raw) {
   // Accept either {ts, level, msg, source} or console args
