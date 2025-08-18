@@ -3,19 +3,54 @@
   "version": "1.0.0",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win"
   },
   "dependencies": {
     "better-sqlite3": "^12.2.0",
-    "electron": "^30.0.0",
+    "electron": "30.0.0",
     "exceljs": "^4.4.0",
-    "https-proxy-agent": "^7.0.6",
     "puppeteer": "^24.16.1",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.1",
     "uuid": "^9.0.0"
   },
   "devDependencies": {
-    "electron-rebuild": "^3.2.9"
+    "electron-rebuild": "^3.2.9",
+    "electron-builder": "^24.0.0"
+  },
+  "build": {
+    "appId": "com.partsbooking.app",
+    "productName": "PartsBooking",
+    "files": [
+      "**/*",
+      "!node_modules/.bin",
+      "!**/*.map"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "directories": {
+      "buildResources": "build"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false
+    }
   }
 }
