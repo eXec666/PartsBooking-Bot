@@ -539,6 +539,7 @@ const api = {
       if (!app.isReady()) await app.whenReady();
       const ok = await initDb();
       if (!ok) throw new Error('DB init failed');
+      if (ok) {console.log(ok.path, "DB Path")}
 
       const inputFile = inputFilePath || CONFIG.inputFile;
       if (!fs.existsSync(inputFile)) throw new Error(`Input file not found: ${inputFile}`);

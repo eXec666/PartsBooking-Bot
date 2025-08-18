@@ -32,12 +32,19 @@ let writeQueue = [];
 let writeTimer = null;
 
 fs.writeFileSync('logs.txt', '');
+
 function enqueueWrite(entry) {
   try {
     writeQueue.push(JSON.stringify(entry) + os.EOL);
     if (!writeTimer) writeTimer = setTimeout(flushWriteQueue, 75);
   } catch {}
 }
+
+function initDatabaseAfterReady() {
+  const initDb = require(path.join(__dirname, 'db', 'init_db'));
+  initDb();
+}
+
 
 function flushWriteQueue() {
   const payload = writeQueue.join('');
@@ -202,7 +209,10 @@ function createWindow() {
 
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  initDatabaseAfterReady();
+  createWindow();
+});
 
 ipcMain.handle('scrape-prices', async (event, inputFilePath) => {
   console.log('⚡️ scrape-prices IPC called');
