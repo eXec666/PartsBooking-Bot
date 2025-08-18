@@ -40,48 +40,36 @@ const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 const sleepRandom = ({ min, max }) => sleep(randInt(min, max));
 
 
-function resolveBundledChromiumExecutable() {
-  const candidates =
-    process.platform === 'win32'
-      ? ['chrome-win64/chrome.exe', 'chrome-win/chrome.exe']
-      : process.platform === 'darwin'
-        ? ['Chromium.app/Contents/MacOS/Chromium']
-        : ['chrome-linux/chrome'];
+function resolveSystemChrome() {
+  // Highest priority: explicit env overrides
+  const envPaths = [
+    process.env.CHROME_PATH,
+    process.env.PUPPETEER_EXECUTABLE_PATH
+  ].filter(Boolean);
 
-  // 1) Preferred: the copy shipped via electron-builder extraResources
-  const base = path.join(process.resourcesPath, 'puppeteer');
-  const roots = [path.join(base, '.local-browsers'), path.join(base, '.local-chromium')].filter(fs.existsSync);
-
-  const stack = [...roots];
-  while (stack.length) {
-    const dir = stack.pop();
-    let entries = [];
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { entries = []; }
-    for (const ent of entries) {
-      const full = path.join(dir, ent.name);
-      if (ent.isDirectory()) {
-        // check if this directory contains a known executable
-        for (const rel of candidates) {
-          const exe = path.join(full, rel);
-          if (fs.existsSync(exe)) return exe;
-        }
-        stack.push(full);
-      }
-    }
+  for (const p of envPaths) {
+    if (fs.existsSync(p)) return p;
   }
 
-  // 2) Dev fallback: Puppeteer’s own resolution on a developer machine
-  try {
-    const pptr = require('puppeteer'); // only for dev-time executablePath()
-    let exe = typeof pptr.executablePath === 'function' ? pptr.executablePath() : null;
-    if (exe && exe.includes(path.sep + 'app.asar' + path.sep)) {
-      exe = exe.replace(path.sep + 'app.asar' + path.sep, path.sep + 'app.asar.unpacked' + path.sep);
-    }
-    if (exe && fs.existsSync(exe)) return exe;
-  } catch (_) {}
+  // Default Windows locations
+  const candidates = [
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    path.join(process.env.LOCALAPPDATA || '', 'Google\\Chrome\\Application\\chrome.exe')
+  ];
 
-  throw new Error('Chromium executable not found under resources/puppeteer (.local-browsers/.local-chromium).');
+  for (const p of candidates) {
+    if (p && fs.existsSync(p)) return p;
+  }
+
+  throw new Error([
+    'System Chrome not found.',
+    'Install Google Chrome or set CHROME_PATH to its chrome.exe.',
+    'Tried:',
+    ...candidates
+  ].join(' '));
 }
+
 
 
 
@@ -225,30 +213,25 @@ class ParallelScraper {
 
   async initialize() {
     try {
-      const execPath = resolveBundledChromiumExecutable();
-      console.log(`[pbScraper][worker ${this.instanceId}] Using Chromium at: ${execPath}`);
+      const execPath = resolveSystemChrome();
+      console.log('[scraper] Using system Chrome:', execPath);
 
-      const launchArgs = [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--disable-gpu',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-extensions',
-        '--proxy-server=http://p.webshare.io:80'
-      ];
-
-      const workerDataDir = path.join(app.getPath('userData'), `puppeteer_worker_${this.instanceId}`);
+      const userDataDir = path.join(app.getPath('userData'), `puppeteer_worker_${this.instanceId}`);
 
       this.browser = await puppeteer.launch({
-        headless: false,
         executablePath: execPath,
-        args: launchArgs,
-        ignoreHTTPSErrors: true,
-        userDataDir: workerDataDir
+        headless: 'new',
+        userDataDir,
+        args: [
+          '--no-sandbox',
+          '--disable-dev-shm-usage',
+          '--no-first-run',
+          '--no-zygote',
+          '--disable-extensions'
+        ],
+        ignoreHTTPSErrors: true
       });
+
 
 
       this.page = await this.browser.newPage();
