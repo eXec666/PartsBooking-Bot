@@ -14,14 +14,28 @@ const {pbScraper, imagesDir} = require('./scraper/pbScraper');
 
 // === Logging: bounded UI tail + NDJSON file persistence with rotation ===
 const os = require('os');
+// ---- LOG PATH RESOLUTION ----
+let LOG_FILE = null;                 // resolved after app is ready
+const preReadyBuffer = [];           // buffer writes that occur before ready
+
+// Centralized write that tolerates early calls
+function ensureLogWrite(payload, cb) {
+  if (!LOG_FILE) {
+    preReadyBuffer.push(payload);    // queue until app.whenReady() resolves path
+    if (typeof cb === 'function') cb(); // avoid blocking callers
+    return;
+  }
+  try {
+    fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
+  } catch {}
+  appendFile(LOG_FILE, payload, cb);
+}
+
 const { mkdirSync, existsSync, appendFile, statSync, renameSync, readFileSync, readdirSync, unlinkSync } = require('fs');
 const { join } = require('path');
-const APP_DIR = app.getAppPath();  // this resolves to your app folder (e.g. PartsBooking-Bot)
-const LOG_FILE = path.join(APP_DIR, 'logs.txt');
 const LOG_UI_CAP = 1000;                      // renderer shows at most this many
 const ROTATE_MAX_BYTES = 20 * 1024 * 1024;    // 20 MB
 const ROTATE_KEEP = 10;                       // keep last N rotated files
-
 
 // in-memory tail for fast snapshot of current run
 let uiTail = [];
@@ -31,7 +45,15 @@ const subscribers = new Set();
 let writeQueue = [];
 let writeTimer = null;
 
-fs.writeFileSync('logs.txt', '');
+function initLogFilePath() {
+  const userDir = app.getPath('userData');        // e.g. C:\Users\<you>\AppData\Roaming\PartsBooking
+  // Ensure the directory exists (userData itself exists, but mkdirSync is harmless if it already does)
+  fs.mkdirSync(userDir, { recursive: true });
+  LOG_FILE = path.join(LOG_FILE);
+}
+
+
+fs.writeFileSync(LOG_FILE, '');
 function enqueueWrite(entry) {
   try {
     writeQueue.push(JSON.stringify(entry) + os.EOL);
@@ -44,7 +66,7 @@ function flushWriteQueue() {
   writeQueue = [];
   writeTimer = null;
 
-  appendFile(LOG_FILE, payload, (err) => {
+  ensureLogWrite(LOG_FILE, payload, (err) => {
     if (err) {
       // Surface a synthetic error into the stream (not to disk to avoid loops)
       broadcastAppend({ ts: Date.now(), level: 'error', msg: `Log write failed: ${err.message}`, source: 'main' });
@@ -202,7 +224,23 @@ function createWindow() {
 
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  initLogFilePath();   
+    if (preReadyBuffer.length) {
+    try { appendFile(LOG_FILE, preReadyBuffer.join(''), () => {}); } catch {}
+    preReadyBuffer.length = 0;
+  }                          // <-- set LOG_FILE before any file writes
+  try {
+    // If you initialize the DB here, do it after logs path is ready
+    const initDb = require(path.join(__dirname, 'db', 'init_db'));
+    initDb();
+  } catch (e) {
+    // Use console.* here; file logger may not be ready if something else fails
+    console.error('[MAIN] DB init failed:', e);
+  }
+  createWindow();
+});
+
 
 ipcMain.handle('scrape-prices', async (event, inputFilePath) => {
   console.log('⚡️ scrape-prices IPC called');
