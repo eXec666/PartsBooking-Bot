@@ -220,14 +220,15 @@ class ParallelScraper {
 
       this.browser = await puppeteer.launch({
         executablePath: execPath,
-        headless: 'new',
+        headless: false,
         userDataDir,
         args: [
           '--no-sandbox',
           '--disable-dev-shm-usage',
           '--no-first-run',
           '--no-zygote',
-          '--disable-extensions'
+          '--disable-extensions',
+          '--proxy-server=http://p.webshare.io:80'
         ],
         ignoreHTTPSErrors: true
       });
