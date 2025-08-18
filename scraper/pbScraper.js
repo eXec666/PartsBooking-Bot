@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
 const ExcelJS = require('exceljs');
 const { app } = require('electron');
 const SUPPORTED_BRANDS = new Set(['JOHN DEERE', 'CLAAS', 'MANITOU']);
@@ -38,6 +38,52 @@ const CONFIG = {
 const sleep = ms => new Promise(res => setTimeout(res, ms));
 const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 const sleepRandom = ({ min, max }) => sleep(randInt(min, max));
+
+
+function resolveBundledChromiumExecutable() {
+  const candidates =
+    process.platform === 'win32'
+      ? ['chrome-win64/chrome.exe', 'chrome-win/chrome.exe']
+      : process.platform === 'darwin'
+        ? ['Chromium.app/Contents/MacOS/Chromium']
+        : ['chrome-linux/chrome'];
+
+  // 1) Preferred: the copy shipped via electron-builder extraResources
+  const base = path.join(process.resourcesPath, 'puppeteer');
+  const roots = [path.join(base, '.local-browsers'), path.join(base, '.local-chromium')].filter(fs.existsSync);
+
+  const stack = [...roots];
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { entries = []; }
+    for (const ent of entries) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        // check if this directory contains a known executable
+        for (const rel of candidates) {
+          const exe = path.join(full, rel);
+          if (fs.existsSync(exe)) return exe;
+        }
+        stack.push(full);
+      }
+    }
+  }
+
+  // 2) Dev fallback: Puppeteer’s own resolution on a developer machine
+  try {
+    const pptr = require('puppeteer'); // only for dev-time executablePath()
+    let exe = typeof pptr.executablePath === 'function' ? pptr.executablePath() : null;
+    if (exe && exe.includes(path.sep + 'app.asar' + path.sep)) {
+      exe = exe.replace(path.sep + 'app.asar' + path.sep, path.sep + 'app.asar.unpacked' + path.sep);
+    }
+    if (exe && fs.existsSync(exe)) return exe;
+  } catch (_) {}
+
+  throw new Error('Chromium executable not found under resources/puppeteer (.local-browsers/.local-chromium).');
+}
+
+
 
 let sharedTaskQueue = [];
 function getNextTask() { return sharedTaskQueue.shift() || null; }
@@ -179,14 +225,7 @@ class ParallelScraper {
 
   async initialize() {
     try {
-      let execPath = puppeteer.executablePath?.();
-      if (execPath && execPath.includes('app.asar')) {
-        execPath = execPath.replace('app.asar', 'app.asar.unpacked');
-      }
-      if (!execPath || !fs.existsSync(execPath)) {
-        throw new Error(`Chromium not found at "${execPath}". Install puppeteer and unpack .local-chromium.`);
-      }
-
+      const execPath = resolveBundledChromiumExecutable();
       console.log(`[pbScraper][worker ${this.instanceId}] Using Chromium at: ${execPath}`);
 
       const launchArgs = [
@@ -203,13 +242,6 @@ class ParallelScraper {
 
       const workerDataDir = path.join(app.getPath('userData'), `puppeteer_worker_${this.instanceId}`);
 
-      if (!Array.isArray(launchArgs) || launchArgs.some(a => typeof a !== 'string')) {
-        throw new Error('launchArgs must be strings only: ' + JSON.stringify(launchArgs.map(a => typeof a)));
-      }
-      if (typeof workerDataDir !== 'string' || workerDataDir.length === 0) {
-        throw new Error('Invalid userDataDir computed from app.getPath("userData")');
-      }
-
       this.browser = await puppeteer.launch({
         headless: false,
         executablePath: execPath,
@@ -217,6 +249,7 @@ class ParallelScraper {
         ignoreHTTPSErrors: true,
         userDataDir: workerDataDir
       });
+
 
       this.page = await this.browser.newPage();
       await this.page.authenticate({

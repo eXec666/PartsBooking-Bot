@@ -8,12 +8,13 @@
     "dist": "electron-builder",
     "dist:win": "electron-builder --win",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
-    "postinstall": "electron-builder install-app-deps"
+    "postinstall": "electron-builder install-app-deps; npx "
   },
   "dependencies": {
     "better-sqlite3": "^12.2.0",
     "exceljs": "^4.4.0",
     "puppeteer": "^24.16.1",
+    "puppeteer-core": "^24.16.2",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.1",
     "uuid": "^9.0.0"
@@ -35,7 +36,19 @@
     ],
     "asar": true,
     "asarUnpack": [
-      "**/*.node"
+      "**/*.node",
+      "node_modules/puppeteer/.local-browsers/**",
+      "node_modules/puppeteer/.local-chromium/**"
+    ],
+    "extraResources": [
+      {
+        "from": "node_modules/puppeteer/.local-browsers",
+        "to": "puppeteer/.local-browsers"
+      },
+      {
+        "from": "node_modules/puppeteer/.local-chromium",
+        "to": "puppeteer/.local-chromium"
+      }
     ],
     "directories": {
       "buildResources": "build"
