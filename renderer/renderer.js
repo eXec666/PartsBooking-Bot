@@ -50,7 +50,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // renderer.js — helper to parse and display the 3-line progress message
   function updateProgressStats(message) {
-    if (!progressStats || !message) return;
+    if (!message) return;
     // Expect lines like:
     // "Processed 123 / 999"
     // "Elapsed 00:01:23"

@@ -58,19 +58,17 @@
             <button id="startPricesBtn" class="btn btn--primary" type="button" disabled>Запустить анализ цен</button>
           </div>
 
-          <div class="progressStats" class="muted" style="float:right; text-align:right;">
+          <div id="progressStats" class="progressStats muted" style="float:right; text-align:right;">
             <div id="statProcessed">Обработано —</div>
             <div id="statElapsed">Время работы —</div>
             <div id="statEta">ETA —</div>
           </div>
-        </div>
+
+          <div id="progressBar" class="progress">
+            <div></div>
+          </div>
 
         <div id="filePathDisplay" class="muted">Файл не выбран</div>
-
-        <!-- Keep original structure for renderer compatibility -->
-        <div id="progressBar" class="progress">
-        </div>
-        </div>
       </div>
     </section>
 
