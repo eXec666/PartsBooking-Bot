@@ -67,6 +67,12 @@ function initDatabaseAfterReady() {
 }
 
 
+function initDatabaseAfterReady() {
+  const initDb = require(path.join(__dirname, 'db', 'init_db'));
+  initDb();
+}
+
+
 function flushWriteQueue() {
   const payload = writeQueue.join('');
   writeQueue = [];
