@@ -6,11 +6,12 @@
     "start": "electron .",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
-    "dist:win": "electron-builder --win"
+    "dist:win": "electron-builder --win",
+    "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
     "better-sqlite3": "^12.2.0",
-    "electron": "30.0.0",
     "exceljs": "^4.4.0",
     "puppeteer": "^24.16.1",
     "puppeteer-extra": "^3.3.6",
@@ -18,8 +19,9 @@
     "uuid": "^9.0.0"
   },
   "devDependencies": {
-    "electron-rebuild": "^3.2.9",
-    "electron-builder": "^24.0.0"
+    "electron": "^30.5.1",
+    "electron-builder": "^24.0.0",
+    "electron-rebuild": "^3.2.9"
   },
   "build": {
     "appId": "com.partsbooking.app",
@@ -27,7 +29,9 @@
     "files": [
       "**/*",
       "!node_modules/.bin",
-      "!**/*.map"
+      "!**/*.map",
+      "!**/logs.txt",
+      "!**/logs/**/*.log"
     ],
     "asar": true,
     "asarUnpack": [
