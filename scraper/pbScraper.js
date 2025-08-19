@@ -21,7 +21,7 @@ let __captureCounter = 0;
 //puppeteer.use(StealthPlugin());
 
 const CONFIG = {
-  inputFile: path.join(process.resourcesPath || __dirname, 'prices_input.xlsx'),
+  inputFile: null,                      // resolved at runtime to app.getPath('userData')
   ourSiteCode: 1269,
   maxPartsToProcess: 0,                 // 0 = no cap
   maxConcurrentInstances: 1,            // Math.max(1, Math.floor(os.cpus().length * 0.25)),
@@ -31,7 +31,7 @@ const CONFIG = {
     waitUntil: 'domcontentloaded'
   },
   apiWaitMs: 60000,
-  imagesDir: path.resolve(process.resourcesPath || __dirname, 'images'),
+  imagesDir: null,                      // resolved at runtime to app.getPath('userData')/images
   imageDownloadTimeoutMs: 10000
 };
 
@@ -74,7 +74,36 @@ function resolveSystemChrome() {
 
 
 let sharedTaskQueue = [];
-function getNextTask() { return sharedTaskQueue.shift() || null; }
+let retryQueue = [];
+let deadLetter = [];
+const MAX_ATTEMPTS = 5;
+
+function getNextTask() { return sharedTaskQueue.shift() || retryQueue.shift() || null; }
+
+const STATE_FILE = () => path.join(app.getPath('userData'), 'scraper-state.json');
+
+function persistState() {
+  try {
+    fs.writeFileSync(
+      STATE_FILE(),
+      JSON.stringify({ queue: sharedTaskQueue, retry: retryQueue, dead: deadLetter }),
+      'utf8'
+    );
+  } catch {}
+}
+
+function loadStateIfAny() {
+  try {
+    const p = STATE_FILE();
+    if (fs.existsSync(p)) {
+      const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+      sharedTaskQueue = Array.isArray(j.queue) ? j.queue : [];
+      retryQueue      = Array.isArray(j.retry) ? j.retry : [];
+      deadLetter      = Array.isArray(j.dead)  ? j.dead  : [];
+    }
+  } catch {}
+}
+
 
 function resolveBrandCode(raw) {
   const b = String(raw || '').trim().toUpperCase();
@@ -100,6 +129,16 @@ const allowBySearchComment = (x) => {
 
 function ensureDir(p) {
   if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
+}
+
+function isRetryable(errLike) {
+  const s = String(errLike && errLike.message || errLike || '').toLowerCase();
+  return (
+    /net::err_(aborted|connection|internet|network|timed_out)/.test(s) ||
+    /(econnreset|etimedout|enotfound|eai_again|socket hang up)/.test(s) ||
+    /no price_items/.test(s) || /no[-\s]?response/.test(s) ||
+    /bad nav status/.test(s) || /5\d\d/.test(s) || /429/.test(s)
+  );
 }
 
 function downloadImage(imageUrl, filePath, referer) {
@@ -233,9 +272,12 @@ class ParallelScraper {
         ignoreHTTPSErrors: true
       });
 
-
+      this.browser.on('disconnected', () => {
+        console.warn(`[worker ${this.instanceId}] browser disconnected; awaiting next run to resume from state file`);
+      });
 
       this.page = await this.browser.newPage();
+
       await this.page.authenticate({
         username: 'wlmdopbt-rotate',
         password: '7rtmo8tgu1t2'
@@ -417,9 +459,20 @@ class ParallelScraper {
 
       await navigateWithRetries(this.page, productUrl, CONFIG.navigation, 3);
       const apiResp = await this.page
-        .waitForResponse(r => r.url().includes('/price_search/search'), { timeout: CONFIG.apiWaitMs })
-        .catch(() => null);
-
+      .waitForResponse(r => {
+        try {
+          if (!r.url().includes('/price_search/search')) return false;
+          const req = typeof r.request === 'function' ? r.request() : null;
+          const method = req && typeof req.method === 'function' ? req.method() : '';
+          if (method === 'OPTIONS') return false;
+          const status = typeof r.status === 'function' ? r.status() : 0;
+          if (status < 200 || status >= 300) return false;
+          const h = typeof r.headers === 'function' ? r.headers() : {};
+          const ct = String(h['content-type'] || h['Content-Type'] || '').toLowerCase();
+          return ct.includes('application/json');
+        } catch { return false; }
+      }, { timeout: CONFIG.apiWaitMs })
+      .catch(() => null);
       // safety: if the response listener hasn’t set priceItems yet, parse here too
       if (apiResp && !priceItems) {
         try {
@@ -437,8 +490,21 @@ class ParallelScraper {
         await sleep(randInt(400, 900));
 
         const apiResp2 = await this.page
-          .waitForResponse(r => r.url().includes('/price_search/search'), { timeout: Math.floor(CONFIG.apiWaitMs / 2) })
-          .catch(() => null);
+        .waitForResponse(r => {
+          try {
+            if (!r.url().includes('/price_search/search')) return false;
+            const req = typeof r.request === 'function' ? r.request() : null;
+            const method = req && typeof req.method === 'function' ? req.method() : '';
+            if (method === 'OPTIONS') return false;
+            const status = typeof r.status === 'function' ? r.status() : 0;
+            if (status < 200 || status >= 300) return false;
+            const h = typeof r.headers === 'function' ? r.headers() : {};
+            const ct = String(h['content-type'] || h['Content-Type'] || '').toLowerCase();
+            return ct.includes('application/json');
+          } catch { return false; }
+        }, { timeout: Math.floor(CONFIG.apiWaitMs / 2) })
+        .catch(() => null);
+
 
         if (apiResp2 && !priceItems) {
           try {
@@ -531,14 +597,28 @@ class ParallelScraper {
   }
 
   async workerLoop(progressCallback) {
-    while (true) {
-      const task = getNextTask();
-      if (!task) break;
-      await this.processTask(task);
-      progressCallback();
-      await sleepRandom(CONFIG.requestThrottleMs);
+  while (true) {
+    const task = getNextTask();
+    if (!task) break;
+
+    const res = await this.processTask(task);
+
+    if (!res || res.ok !== true) {
+      const attempts = (task.attempts || 0) + 1;
+      const retryable = isRetryable(res && res.error);
+      if (retryable && attempts < MAX_ATTEMPTS) {
+        retryQueue.push({ ...task, attempts });
+      } else {
+        deadLetter.push({ ...(task || {}), error: (res && res.error) || 'unknown' });
+      }
     }
+
+    persistState();
+    progressCallback();
+    await sleepRandom(CONFIG.requestThrottleMs);
   }
+}
+
 
   async close() {
     try { if (this.page && !this.page.isClosed()) await this.page.close(); } catch {}
@@ -554,11 +634,26 @@ const api = {
 
     try {
       if (!app.isReady()) await app.whenReady();
+      const dir = path.join(app.getPath('userData'), 'images');
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      CONFIG.imagesDir = dir;
+
       const ok = await initDb();
       if (!ok) throw new Error('DB init failed');
+
       if (ok) {console.log(ok.path, "DB Path")}
 
-      const inputFile = inputFilePath || CONFIG.inputFile;
+      // Writable defaults under userData
+      CONFIG.imagesDir = path.join(app.getPath('userData'), 'images');
+      CONFIG.inputFile = inputFilePath
+        ? inputFilePath
+        : path.join(app.getPath('userData'), 'prices_input.xlsx');
+      ensureDir(CONFIG.imagesDir);
+
+      // Resume state if present
+      loadStateIfAny();
+
+      const inputFile = CONFIG.inputFile;
       if (!fs.existsSync(inputFile)) throw new Error(`Input file not found: ${inputFile}`);
 
       const workbook = new ExcelJS.Workbook();
@@ -635,8 +730,12 @@ const api = {
           : filtered;
 
       console.log(`[pbScraper] Existing rows skipped: ${skippedExisting} / ${tasks.length}`);
-      sharedTaskQueue = [...finalTasks];
-      if (finalTasks.length === 0) return [];
+      sharedTaskQueue = sharedTaskQueue.length
+  ? [...sharedTaskQueue, ...retryQueue.splice(0), ...finalTasks]
+  : [...finalTasks];
+persistState();
+
+if (finalTasks.length === 0 && sharedTaskQueue.length === 0) return [];
 
       const workerCount = CONFIG.maxConcurrentInstances;
       const workers = [];
@@ -707,7 +806,20 @@ const api = {
       isScraping = false;
     }
   },
-  imagesDir: CONFIG.imagesDir
+  imagesDir() {
+    try {
+      if (!CONFIG.imagesDir) {
+        const dir = path.join(app.getPath('userData'), 'images');
+        ensureDir(dir);
+        CONFIG.imagesDir = dir;
+      }
+      return CONFIG.imagesDir;
+    } catch {
+      return null;
+    }
+  },
+  isActive: () => !!isScraping
+
 };
 
 api.pbScraper = api;

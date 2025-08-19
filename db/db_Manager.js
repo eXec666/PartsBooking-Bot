@@ -17,6 +17,7 @@ function connect() {
     db = new Database(DB_PATH);
     db.pragma('journal_mode = WAL');
     db.pragma('synchronous = NORMAL');
+    db.pragma('busy_timeout = 3000');
   }
   return db;
 }
@@ -73,7 +74,10 @@ function wipeDatabase({ mode = 'delete', vacuum = true } = {}) {
         throw e;
       }
       initDb();
+      /* reset prepared stmt cache after schema change */
+      __existsStmt = null;
       const exists = dbc.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='prices'").get();
+
       console.log(`[db_Manager] wipeDatabase: schema recreated. prices table exists=${!!exists}`);
       try {
         const res = dbc.pragma("wal_checkpoint(TRUNCATE)");
@@ -96,6 +100,9 @@ function wipeDatabase({ mode = 'delete', vacuum = true } = {}) {
       dbc.prepare('DELETE FROM prices').run();
     });
     tx();
+    /* reset prepared stmt cache after mass delete */
+    __existsStmt = null;
+
 
     const after = dbc.prepare(`SELECT COUNT(*) AS c FROM prices`).get().c;
     console.log(`[db_Manager] wipeDatabase: delete complete. rows after=${after}`);

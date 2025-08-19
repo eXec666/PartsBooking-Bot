@@ -7,7 +7,7 @@ const fs = require('fs');
 const dbManager = require('./db/db_Manager');
 const {wipeDatabase} = dbManager
 const {query} = dbManager
-const {pbScraper, imagesDir} = require('./scraper/pbScraper');
+const {pbScraper} = require('./scraper/pbScraper');
 //const {data} = require('node-persist');
 
 // main.js — Logging module (add near top-level, after requires)
@@ -313,8 +313,14 @@ ipcMain.handle('get-table-data', async () => {
 
 
 ipcMain.handle('wipe-db', async () => {
-  const result = await dbManager.wipeDatabase();
-  return result;
+  try {
+    if (pbScraper.isActive && pbScraper.isActive()) {
+      return { success: false, error: 'Scraper is active; stop the run before wiping the database.' };
+    }
+    return await dbManager.wipeDatabase();
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
 });
 
 
@@ -347,7 +353,8 @@ ipcMain.handle('download-csv', async () => {
   return result; 
 });
 
-ipcMain.handle('get-images-dir', async () => imagesDir);
+ipcMain.handle('get-images-dir', async () => pbScraper.imagesDir());
+
 
 
 ipcMain.handle('open-folder', async (_evt, folderPath) => {
