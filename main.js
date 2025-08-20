@@ -1,5 +1,30 @@
 debugger;
 const {app, BrowserWindow, ipcMain, dialog, shell} = require('electron');
+// Auto-dismiss Electron error dialogs; log instead.
+(() => {
+  const _showErrorBox   = dialog.showErrorBox.bind(dialog);
+  const _showMessageBox = dialog.showMessageBox.bind(dialog);
+
+  dialog.showErrorBox = (title, content) => {
+    // Mark in logs; no modal UI.
+    console.error(`[dialog suppressed] ${title}: ${content}`);
+  };
+
+  dialog.showMessageBox = async (browserWindowOrOpts, maybeOpts) => {
+    // Normalize args: showMessageBox(win, opts) OR showMessageBox(opts)
+    const opts = maybeOpts ? maybeOpts : browserWindowOrOpts;
+    const isErrorish =
+      opts && (opts.type === 'error' || /enoent/i.test(opts.message || ''));
+
+    if (isErrorish) {
+      console.error(`[dialog suppressed] ${opts.title || 'Error'}: ${opts.message || ''}`);
+      // Immediately resolve with default/first button so callers continue.
+      return { response: opts.defaultId ?? 0, checkboxChecked: false };
+    }
+    // Non-error dialogs behave normally.
+    return _showMessageBox(browserWindowOrOpts, maybeOpts);
+  };
+})();
 const originalLog = console.log;
 const originalErr = console.error;
 const path = require('path');
@@ -104,6 +129,17 @@ function rotateLogs() {
   } catch {}
 }
 
+// Synchronous drain for emergency/quit paths.
+function drainLogsSync() {
+  try {
+    if (!LOG_FILE) return;
+    if (writeQueue && writeQueue.length) {
+      const payload = writeQueue.join('');
+      writeQueue.length = 0;
+      fs.appendFileSync(LOG_FILE, payload);
+    }
+  } catch {}
+}
 
 function normalizeEntry(raw) {
   // Accept either {ts, level, msg, source} or console args
@@ -183,6 +219,20 @@ ipcMain.on('log:emit', (_e, entry) => ingest(entry));
   });
 })();
 
+// Global error sinks — keep process alive and mark the event.
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err && err.stack || err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason && reason.stack || reason);
+});
+process.on('warning', (w) => {
+  console.warn('[process warning]', w && w.stack || w);
+});
+app.on('gpu-process-crashed', (_e, killed) => {
+  console.error(`[gpu-process-crashed] killed=${killed}`);
+});
+
 // Open logs.txt with the OS default app; fall back to revealing in folder on failure
 ipcMain.handle('log:open-file', async () => {
   try {
@@ -226,12 +276,40 @@ function createWindow() {
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   // win.webContents.openDevTools();
 
-  // If the renderer crashes/exits, just queue logs and avoid sending
+  // If// If the renderer goes away, mark it and try a soft recovery.
   win.webContents.on('render-process-gone', (_e, details) => {
-    console.warn('Renderer gone:', details && details.reason ? details.reason : 'unknown');
-  });
+    const reason   = (details && details.reason) || 'unknown';
+    const exitCode = details && details.exitCode;
+    console.error(`[renderer gone] reason=${reason} exitCode=${exitCode}`);
 
+    // Flush any buffered logs synchronously (helper added below).
+    try { if (typeof drainLogsSync === 'function') drainLogsSync(); } catch {}
+
+    // Attempt a soft reload on crash/oom/killed; otherwise leave it.
+    if (/crashed|oom|killed/i.test(reason)) {
+      setTimeout(() => {
+        if (!win.isDestroyed()) {
+          try { win.reload(); } catch {}
+        }
+      }, 1000);
+    }
+  });
 }
+
+// Capture common webContents failures globally (no UI).
+app.on('web-contents-created', (_e, wc) => {
+  wc.on('preload-error', (_ev, preloadPath, error) => {
+    console.error(`[preload-error] ${preloadPath}: ${error && error.message}`);
+  });
+  wc.on('did-fail-load', (_ev, code, description, url, isMainFrame) => {
+    console.error(`[did-fail-load] code=${code} desc=${description} url=${url} main=${isMainFrame}`);
+  });
+  wc.on('unresponsive', () => { console.warn('[webContents] unresponsive'); });
+  wc.on('crashed',      () => { console.error('[webContents] crashed'); });
+});
+
+app.on('before-quit', () => { try { drainLogsSync(); } catch {} });
+app.on('will-quit',   () => { try { drainLogsSync(); } catch {} });
 
 app.whenReady().then(() => {
   initLogFilePath();   
