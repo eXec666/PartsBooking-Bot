@@ -24,7 +24,7 @@ const CONFIG = {
   inputFile: null,                      // resolved at runtime to app.getPath('userData')
   ourSiteCode: 1269,
   maxPartsToProcess: 0,                 // 0 = no cap
-  maxConcurrentInstances: 1,            // Math.max(1, Math.floor(os.cpus().length * 0.25)),
+  maxConcurrentInstances: Math.max(1, Math.floor(os.cpus().length * 0.25)),
   requestThrottleMs: { min: 1500, max: 3000 },
   navigation: {
     timeout: 60000,
@@ -77,6 +77,96 @@ let sharedTaskQueue = [];
 let retryQueue = [];
 let deadLetter = [];
 const MAX_ATTEMPTS = 5;
+
+// --- Central aggregator for results from all workers ---
+
+// Incoming queue of { slag, partNumber, brandName }
+const resultQueue = [];
+let aggregatorRunning = false;
+let aggregatorStop = false;
+
+// Tunables for pooled DB writes
+const BATCH_SIZE = 100;
+const IDLE_FLUSH_MS = 1000;
+
+function enqueueSlag(item) {
+  // item: { slag, partNumber, brandName }
+  if (!item || !Array.isArray(item.slag)) return;
+  resultQueue.push(item);
+}
+
+function rankPriceAsync(slag, ourCode, partNumber, brandName) {
+  // Make it async to decouple from worker loop microtasks
+  return Promise.resolve().then(() => rankPrice(slag, ourCode, partNumber, brandName));
+}
+
+/**
+ * Start central aggregator; returns a promise that resolves on graceful stop.
+ */
+function startAggregator() {
+  if (aggregatorRunning) return Promise.resolve();
+  aggregatorRunning = true;
+
+  return new Promise((resolve) => {
+    let batch = [];
+    let idleTimer = null;
+
+    const flush = () => {
+      if (!batch.length) return;
+      try {
+        dbManager.dumpToDb('prices', batch);
+      } catch (e) {
+        console.warn('[aggregator] dumpToDb failed:', e && e.message);
+      } finally {
+        batch = [];
+      }
+    };
+
+    const scheduleIdleFlush = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        flush();
+        if (aggregatorStop && resultQueue.length === 0) {
+          clearTimeout(idleTimer);
+          aggregatorRunning = false;
+          resolve();
+        } else {
+          scheduleIdleFlush();
+        }
+      }, IDLE_FLUSH_MS);
+    };
+
+    scheduleIdleFlush();
+
+    (async function pump() {
+      while (!aggregatorStop || resultQueue.length > 0) {
+        const next = resultQueue.shift();
+        if (!next) {
+          // brief rest (cooperative) if no work
+          await sleep(25);
+          continue;
+        }
+
+        try {
+          const ranked = await rankPriceAsync(next.slag, CONFIG.ourSiteCode, next.partNumber, next.brandName);
+          batch.push(ranked);
+          if (batch.length >= BATCH_SIZE) {
+            flush();
+          }
+        } catch (e) {
+          console.warn('[aggregator] rankPriceAsync failed:', e && e.message);
+        }
+      }
+
+      // Final flush on exit
+      flush();
+      clearTimeout(idleTimer);
+      aggregatorRunning = false;
+      resolve();
+    })();
+  });
+}
+
 
 function getNextTask() { return sharedTaskQueue.shift() || retryQueue.shift() || null; }
 
@@ -570,21 +660,11 @@ class ParallelScraper {
       for(i = 0; i < logPriceArray.length; i++)  {
         console.log(`${i}: ${logPriceArray[i]}`)
       }
+     enqueueSlag({ slag, partNumber, brandName });
 
-      const ranked = rankPrice(slag, CONFIG.ourSiteCode, partNumber, brandName);
-
-      this.results.push(ranked);
-      this.buffer.push(ranked);
-
-      if (this.buffer.length >= 100) {
-        try {
-          dbManager.dumpToDb('prices', this.buffer);
-        } finally {
-          this.buffer = [];
-        }
-      }
       console.log(`[worker ${this.instanceId}] [${partNumber}] total bandwidth used: ${bytesIn} bytes`);
       return { ok: true, count: slag.length, partNumber };
+
     } catch (err) {
       console.error(`[worker ${this.instanceId}] task ${partNumber} failed: ${err.message}`);
       return { ok: false, error: err.message, partNumber };
@@ -739,6 +819,10 @@ if (finalTasks.length === 0 && sharedTaskQueue.length === 0) return [];
 
       const workerCount = CONFIG.maxConcurrentInstances;
       const workers = [];
+      // Start central aggregator (pooled writer)
+      aggregatorStop = false;
+      const aggregatorPromise = startAggregator();
+
       for (let i = 0; i < workerCount; i++) {
         const w = new ParallelScraper(i + 1);
         await w.initialize();
@@ -784,21 +868,16 @@ if (finalTasks.length === 0 && sharedTaskQueue.length === 0) return [];
         Elapsed ${formatHMS(totalElapsed)}
         ETA 00:00:00`);
 
-      for (const w of workers) {
-        if (w.buffer && w.buffer.length) {
-          dbManager.dumpToDb('prices', w.buffer);
-          w.buffer = [];
-        }
-      }
-
-      const aggregated = workers.flatMap(w => w.results);
+            // Signal aggregator to finish after workers drain their queues
+      aggregatorStop = true;
+      await aggregatorPromise;
 
       await Promise.all(workers.map(w => w.close()));
       onForceRefresh();
 
-      if (aggregated.length) dbManager.dumpToDb('prices', aggregated);
+      // Aggregator wrote everything; no need to return rows
+      return { message: 'Scrape complete (pooled DB writes).' };
 
-      return aggregated;
     } catch (err) {
       console.error('FATAL in runWithProgress:', err.message);
       return { error: err.message };
