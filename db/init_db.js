@@ -4,8 +4,6 @@ const { DB_PATH } = require('./db_config');
 
 module.exports = function initDb() {
   const db = new Database(DB_PATH);
-  db.pragma('journal_mode = WAL');
-  db.pragma('synchronous = NORMAL');
 
   // Create table without site_code column
   db.prepare(`CREATE TABLE IF NOT EXISTS prices (
@@ -22,5 +20,6 @@ module.exports = function initDb() {
     PRIMARY KEY(part_number, brand_name)
   )`).run();
 
+  db.close(); // important: don’t leak a second writer connection
   return true;
 };

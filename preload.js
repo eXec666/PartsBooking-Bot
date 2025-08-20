@@ -33,6 +33,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     });
   },
 
+  onScrapeState: (callback) => {
+    ipcRenderer.on('scrape-state', (_e, active) => callback(!!active));
+  },
+
   onForceRefresh: (callback) => {
     ipcRenderer.on('force-refresh', callback);
   },

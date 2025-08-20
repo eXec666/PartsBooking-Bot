@@ -48,7 +48,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const statEta       = document.getElementById('statEta');
 
 
-  // renderer.js — helper to parse and display the 3-line progress message
+  // lock CSV while scraper is active
+  if (window.electronAPI?.onScrapeState && downloadCsvBtn) {
+    window.electronAPI.onScrapeState((active) => {
+      downloadCsvBtn.disabled = !!active;
+    });
+  }
+
+  // helper to parse and display the 3-line progress message
   function updateProgressStats(message) {
     if (!message) return;
     // Expect lines like:
@@ -249,11 +256,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     startPricesBtn.disabled = true;
     startPricesBtn.textContent = 'Запуск Цен...';
-    // renderer.js — clear stats when a new run starts (inside startPricesBtn click handler, before calling scrape)
+    // proactively lock CSV button until scrape-state event arrives
+    if (downloadCsvBtn) downloadCsvBtn.disabled = true;
+
+    // clear stats when a new run starts (inside startPricesBtn click handler, before calling scrape)
     if (progressStats) {
-      if (statProcessed) statProcessed.textContent = 'Processed —';
-      if (statElapsed)   statElapsed.textContent   = 'Elapsed —';
-      if (statEta)       statEta.textContent       = 'ETA —';
+      if (statProcessed) statProcessed.textContent = 'Обработано —';
+      if (statElapsed)   statElapsed.textContent   = 'Время с начала —'; // want these to tick up every second since the start
+      if (statEta)       statEta.textContent       = 'До конца осталось —'; // we want these to tick down every second 
     }
 
     try {
@@ -265,7 +275,9 @@ document.addEventListener('DOMContentLoaded', () => {
     } finally {
       startPricesBtn.disabled = false;
       startPricesBtn.textContent = 'Запустить Цены';
-    }
+      // allow CSV again (scrape-state listener will keep it disabled if still active)
+      if (downloadCsvBtn) downloadCsvBtn.disabled = false;
+    } 
   });
   
    if (queryPartBtn) {

@@ -220,6 +220,10 @@ ipcMain.on('log:emit', (_e, entry) => ingest(entry));
 })();
 
 // Global error sinks — keep process alive and mark the event.
+process.on('exit', (code) => { console.error(`[process exit] code=${code}`); });
+app.on('child-process-gone', (_e, d) => {
+  console.error(`[child-process-gone] type=${d?.type} reason=${d?.reason} exitCode=${d?.exitCode}`);
+});
 process.on('uncaughtException', (err) => {
   console.error('[uncaughtException]', err && err.stack || err);
 });
@@ -331,13 +335,17 @@ app.whenReady().then(() => {
 
 ipcMain.handle('scrape-prices', async (event, inputFilePath) => {
   console.log('⚡️ scrape-prices IPC called');
+  let win;
   try {
-    let win = BrowserWindow.getFocusedWindow();
+    win = BrowserWindow.getFocusedWindow();
     if (!win) {
       const windows = BrowserWindow.getAllWindows();
       win = windows.find(w => w.isVisible()) || windows[0];
     }
 
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('scrape-state', true);
+    }
     console.log('🔌 Starting scraping...');
     const result = await pbScraper.runWithProgress((percent, message) => {
           try {
@@ -372,6 +380,12 @@ ipcMain.handle('scrape-prices', async (event, inputFilePath) => {
       });
     }
     return { error: err.message };
+  } finally {
+    // Mark scraper inactive even if it failed
+    try {
+      const w = win || BrowserWindow.getAllWindows()[0];
+      if (w && !w.isDestroyed()) w.webContents.send('scrape-state', false);
+    } catch {}
   }
 });
 
@@ -427,8 +441,10 @@ ipcMain.handle('select-excel-file', async () => {
 
 
 ipcMain.handle('download-csv', async () => {
-  const result = await dbManager.generateCsvFiles();
-  return result; 
+  if (pbScraper.isActive && pbScraper.isActive()) {
+    return { success: false, error: 'CSV export is disabled while the scraper is running.' };
+  }
+  return await dbManager.generateCsvFiles();
 });
 
 ipcMain.handle('get-images-dir', async () => pbScraper.imagesDir());

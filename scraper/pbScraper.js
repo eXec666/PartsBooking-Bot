@@ -576,7 +576,7 @@ class ParallelScraper {
       this.results.push(ranked);
       this.buffer.push(ranked);
 
-      if (this.buffer.length >= 10) {
+      if (this.buffer.length >= 100) {
         try {
           dbManager.dumpToDb('prices', this.buffer);
         } finally {

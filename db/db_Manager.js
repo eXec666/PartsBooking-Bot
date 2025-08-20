@@ -18,6 +18,8 @@ function connect() {
     db.pragma('journal_mode = WAL');
     db.pragma('synchronous = NORMAL');
     db.pragma('busy_timeout = 3000');
+    db.pragma('wal_autocheckpoint = 1000');
+    db.pragma('journal_size_limit = 33554432');
   }
   return db;
 }
@@ -253,7 +255,6 @@ function dumpToDb(tableName, rows) {
   });
 
   tx(rows);
-  checkpoint(false);
   bus.emit('dump-progress', { table: 'prices', count: rows.length });
 
   return { inserted: rows.length };
