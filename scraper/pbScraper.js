@@ -332,41 +332,22 @@ async function navigateWithRetries(page, url, navOpts, attempts = 3) {
 }
 
 class ParallelScraper {
-  constructor(instanceId) {
+  constructor(instanceId,browser) {
     this.instanceId = instanceId;
     this.results = [];
     this.buffer = [];
-    this.browser = null;
+    this.browser = browser;
     this.page = null;
   }
 
   async initialize() {
     try {
-      const execPath = resolveSystemChrome();
-      console.log('[scraper] Using system Chrome:', execPath);
-
-      const userDataDir = path.join(app.getPath('userData'), `puppeteer_worker_${this.instanceId}`);
-
-      this.browser = await puppeteer.launch({
-        executablePath: execPath,
-        headless: false,
-        userDataDir,
-        args: [
-          '--no-sandbox',
-          '--disable-dev-shm-usage',
-          '--no-first-run',
-          '--no-zygote',
-          '--disable-extensions',
-          '--proxy-server=http://p.webshare.io:80'
-        ],
-        ignoreHTTPSErrors: true
-      });
-
-      this.browser.on('disconnected', () => {
-        console.warn(`[worker ${this.instanceId}] browser disconnected; awaiting next run to resume from state file`);
-      });
+      if (!this.browser) {
+        throw new Error('Shared browser not available in ParallelScraper.initialize()');
+      }
 
       this.page = await this.browser.newPage();
+
 
       await this.page.authenticate({
         username: 'wlmdopbt-rotate',
@@ -702,7 +683,7 @@ class ParallelScraper {
 
   async close() {
     try { if (this.page && !this.page.isClosed()) await this.page.close(); } catch {}
-    try { if (this.browser) await this.browser.close(); } catch {}
+    
   }
 }
 
@@ -816,18 +797,41 @@ const api = {
 persistState();
 
 if (finalTasks.length === 0 && sharedTaskQueue.length === 0) return [];
+      // Start central aggregator (pooled writer)
+      // One shared Chrome instance
+      const execPath = resolveSystemChrome();
+      console.log('[scraper] Using system Chrome:', execPath);
+
+      const sharedUserDataDir = path.join(app.getPath('userData'), 'puppeteer_shared');
+      const browser = await puppeteer.launch({
+        executablePath: execPath,
+        headless: false,
+        userDataDir: sharedUserDataDir,
+        args: [
+          '--no-sandbox',
+          '--disable-dev-shm-usage',
+          '--no-first-run',
+          '--no-zygote',
+          '--disable-extensions',
+          '--proxy-server=http://p.webshare.io:80'
+        ],
+        ignoreHTTPSErrors: true
+      });
+
+      aggregatorStop = false;
+      const aggregatorPromise = startAggregator()
+      browser.on('disconnected', () => {
+        console.warn(`[shared-browser] disconnected; subsequent runs will resume from state file if any`);
+      });
 
       const workerCount = CONFIG.maxConcurrentInstances;
       const workers = [];
-      // Start central aggregator (pooled writer)
-      aggregatorStop = false;
-      const aggregatorPromise = startAggregator();
-
       for (let i = 0; i < workerCount; i++) {
-        const w = new ParallelScraper(i + 1);
-        await w.initialize();
+        const w = new ParallelScraper(i + 1, browser);
+        await w.initialize(browser); // opens a new Page (tab)
         workers.push(w);
       }
+
       
       // Guard: nothing to do
       const totalCount = finalTasks.length;
@@ -862,18 +866,25 @@ if (finalTasks.length === 0 && sharedTaskQueue.length === 0) return [];
 
       await Promise.all(workers.map(w => w.workerLoop(tick)));
 
-      const totalElapsed = Date.now() - startTime;
+       const totalElapsed = Date.now() - startTime;
       progressCallback(100, 
         `Processed ${processed} / ${totalCount} 
         Elapsed ${formatHMS(totalElapsed)}
         ETA 00:00:00`);
 
-            // Signal aggregator to finish after workers drain their queues
+      // Stop aggregator and wait for the final drain
       aggregatorStop = true;
       await aggregatorPromise;
 
+      // Close pages (tabs) then the shared browser
       await Promise.all(workers.map(w => w.close()));
+      try { await browser.close(); } catch {}
+
       onForceRefresh();
+
+      // Return combined results (already written via aggregator)
+      const aggregated = workers.flatMap(w => w.results);
+      return aggregated;
 
       // Aggregator wrote everything; no need to return rows
       return { message: 'Scrape complete (pooled DB writes).' };
