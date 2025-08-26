@@ -190,7 +190,7 @@ function rankPrice(slag, ourCode, partNumber, brandName) {
   const weAreLast = last && last[0] === String(ourCode);
 
   if (weAreLeader) {
-    out.leader_code  = 'G&G Лидер';
+    out.leader_code  = '1269';
     out.leader_price = out.our_price;
     out.over_code    = 'G&G Лидер';
     out.over_price   = 'G&G Лидер';

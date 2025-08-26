@@ -349,7 +349,7 @@ class ParallelScraper {
 
       this.browser = await puppeteer.launch({
         executablePath: execPath,
-        headless: false,
+        headless: true,
         userDataDir,
         args: [
           '--no-sandbox',
