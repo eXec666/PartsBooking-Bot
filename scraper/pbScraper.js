@@ -54,7 +54,8 @@ function resolveSystemChrome() {
   // Default Windows locations
   const candidates = [
     'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe', 
+    '/usr/bin/google-chrome',
     path.join(process.env.LOCALAPPDATA || '', 'Google\\Chrome\\Application\\chrome.exe')
   ];
 
@@ -345,7 +346,7 @@ class ParallelScraper {
       const execPath = resolveSystemChrome();
       console.log('[scraper] Using system Chrome:', execPath);
 
-      const userDataDir = path.join(app.getPath('userData'), `puppeteer_worker_${this.instanceId}`);
+     const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), `pb_worker_${this.instanceId}_`));
 
       this.browser = await puppeteer.launch({
         executablePath: execPath,
@@ -691,6 +692,10 @@ class ParallelScraper {
       } else {
         deadLetter.push({ ...(task || {}), error: (res && res.error) || 'unknown' });
       }
+	sharedTaskQueue.push({
+		...task,
+		attempts
+	});
     }
 
     persistState();
