@@ -56,8 +56,11 @@
           <div class="btn-group">
             <button id="selectFileBtn" class="btn" type="button">Выбрать Excel файл</button>
             <button id="startPricesBtn" class="btn btn--primary" type="button" disabled>Запустить анализ цен</button>
+	    <button id="wipeStateBtn" class="btn btn--danger" type="button" aria-describedby="wipeStateHint">Сбросить Историю</button>
+	    <span id="wipeStateHint" class="sr-only">
+	       Опасное Действие: очищает очередь всех предыдущих запросов
+	    </span>
           </div>
-
           <div id="progressStats" class="progressStats muted" style="float:right; text-align:right;">
             <div id="statProcessed">Обработано —</div>
             <div id="statElapsed">Время работы —</div>
