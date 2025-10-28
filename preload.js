@@ -11,7 +11,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Excel file import & scraping
   selectExcelFile:       () => ipcRenderer.invoke('select-excel-file'),
   scrapePrices:        (filePath) => ipcRenderer.invoke('scrape-prices', filePath),
-  
+  wipeScraperState: () => ipcRenderer.invoke('wipe-scraper-state'),
+
   // Database viewer (legacy call—now routed into same window)
   openDbViewer:   () => ipcRenderer.send('open-db-viewer'),
   getTableData:   (table) => ipcRenderer.invoke('get-table-data', table),

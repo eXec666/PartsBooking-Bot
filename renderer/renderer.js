@@ -30,7 +30,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const startPricesBtn = document.getElementById('startPricesBtn');
   const filePathDisplay   = document.getElementById('filePathDisplay');
   const progressBar       = document.querySelector('#progressBar > div');
-
+  const wipeStateBtn = document.getElementById('wipeStateBtn');
   // DB
   const wipeDbBtn     = document.getElementById('wipeDbBtn');
   const openDbBtn     = document.getElementById('openDbBtn');
@@ -325,6 +325,29 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
+
+  if (wipeStateBtn) {
+    wipeStateBtn.addEventListener('click', async () => {
+     try {
+       const ok = await window.electronAPI.wipeScraperState();
+       // optional: update UI to acknowledge
+       // e.g. reset stats / progress bar text
+       document.getElementById('statProcessed').textContent = 'Обработано — 0';
+       document.getElementById('statElapsed').textContent   = 'Время работы — 00:00:00';
+       document.getElementById('statEta').textContent       = 'До конца осталось — неизвестно';
+
+       document.getElementById('filePathDisplay').textContent = 'Очередь очищена. Выберите файл.';
+      
+       // also zero the progress bar
+       const barInner = document.querySelector('#progressBar > div');
+       if (barInner) barInner.style.width = '0%';
+
+     } catch (err) {
+       console.error('wipeScraperState failed:', err);
+       }
+     });
+   }
+
 
   if (openImagesBtn) {
     openImagesBtn.addEventListener('click', async () => {

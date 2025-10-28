@@ -902,8 +902,35 @@ if (finalTasks.length === 0 && sharedTaskQueue.length === 0) return [];
       return null;
     }
   },
-  isActive: () => !!isScraping
+  isActive: () => !!isScraping,
 
+
+  wipeState: function() {
+    // Guard: do not mutate mid-run
+    if (isScraping) {
+      throw new Error('Cannot wipe state while scraping is active.');
+    }
+
+    // clear in-memory queues
+    sharedTaskQueue = [];
+    retryQueue = [];
+    deadLetter = [];
+
+    // remove persisted state file
+    try {
+      const sf = STATE_FILE();
+      if (fs.existsSync(sf)) {
+        fs.rmSync(sf, { force: true });
+      }
+    } catch (err) {
+      console.warn('wipeState: failed to remove state file:', err.message);
+    }
+
+    // optional: also persist empty state for cleanliness
+    persistState();
+
+    return { cleared: true };
+  }
 };
 
 api.pbScraper = api;

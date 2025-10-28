@@ -416,6 +416,16 @@ ipcMain.handle('wipe-db', async () => {
 });
 
 
+ipcMain.handle('wipe-scraper-state', async () => {
+  try {
+    const res = pbScraper.wipeState();
+    return { ok: true, ...res };
+  } catch (err) {
+    console.error('wipe-scraper-state failed:', err);
+    return { ok: false, error: err.message };
+  }
+});
+
 ipcMain.handle('query-part', async (event, partNumber) => {
   try {
     const result = await dbManager.queryVehiclesForPart(partNumber);
